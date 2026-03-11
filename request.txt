@@ -1,0 +1,1 @@
+python -m subs_diff --stt Code3-dub1.srt --ref Code3-sub1.srt --out report222.json --llm api --llm-model openai/gpt-4o-mini --checkpoint --llm-debug

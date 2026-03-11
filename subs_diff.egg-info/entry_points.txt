@@ -1,0 +1,2 @@
+[console_scripts]
+subs-diff = subs_diff.cli:main
