@@ -1,6 +1,7 @@
 rapidfuzz>=3.0.0
 httpx>=0.25.0
 jinja2>=3.1.0
+tqdm>=4.65.0
 
 [dev]
 pytest>=7.0.0

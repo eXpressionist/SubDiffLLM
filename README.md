@@ -84,6 +84,8 @@ python -m subs_diff config clear
 | `--llm-context-size` | Размер контекста (prev/next) для LLM | `1` |
 | `--llm-debug` | Логировать запросы/ответы LLM в читаемый лог | `false` |
 | `--llm-debug-file` | Путь к debug-логу LLM | `llm_debug.log` |
+| `--check-long-segments` | Проверять длинные сегменты (> порога) | `false` |
+| `--max-segment-duration` | Макс. длительность сегмента (сек) | `6.0` |
 | `-v`, `--verbose` | Подробный вывод | `false` |
 
 ### Примеры
@@ -144,6 +146,18 @@ python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm api 
     --ref-only-missing
 ```
 
+#### Проверка длинных сегментов
+
+```bash
+# Найти сегменты длиннее 6 секунд и предложить точки разделения
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
+    --check-long-segments
+
+# Указать другой порог (например, 4 секунды)
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
+    --check-long-segments --max-segment-duration 4.0
+```
+
 #### Пересборка HTML из JSON
 
 ```bash
@@ -195,6 +209,7 @@ python -m subs_diff.reporter report.json
 | `missing_content` | Пропущен важный кусок смысла |
 | `terminology` | Ошибка в термине/жаргонизме |
 | `forced_mismatch` | Расхождение в forced-сегменте (надпись на экране) |
+| `long_segment` | Длинный сегмент с предложением разделения |
 | `other` | Другое расхождение |
 
 ### Уровни важности
@@ -216,6 +231,7 @@ subs_diff/
 ├── parser.py            # SRT парсер, токенизация, нормализация
 ├── align.py             # Выравнивание, merge сегментов
 ├── heuristics.py        # Метрики, редкие токены, детекция сущностей
+├── segments.py          # Анализ длинных сегментов, предложения разделения
 ├── llm.py               # LLM адаптер (off/local/api/auto)
 ├── report.py            # Генерация JSON и HTML отчётов
 └── reporter.py          # Утилита пересборки HTML из JSON

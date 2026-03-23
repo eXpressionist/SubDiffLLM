@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from jinja2 import Template
 
@@ -103,6 +103,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .sev-med { color: var(--med); border-color: #ffcc80; }
         .sev-low { color: var(--low); border-color: #90caf9; }
 
+        .cat-long-segment { background: #fff3e0; border-color: #ffcc80; }
+
         .time { font-family: Consolas, monospace; color: var(--muted); font-size: 13px; }
         .reason { font-weight: 600; margin: 6px 0; }
 
@@ -162,6 +164,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
 
                 <div class="reason">{{ issue.short_reason }}</div>
+
+                {% if issue.category == "long_segment" %}
+                <div class="block-title" style="margin-top: 8px;">Предложения разделения</div>
+                <pre class="text-block" style="background: #fff8e1;">{{ issue.evidence if issue.evidence else "(нет предложений)" }}</pre>
+                {% endif %}
 
                 <div class="block-title">STT (A)</div>
                 <pre class="text-block">{{ issue.a_text if issue.a_text else "(пусто)" }}</pre>

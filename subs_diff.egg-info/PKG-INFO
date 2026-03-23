@@ -16,9 +16,11 @@ Classifier: Topic :: Multimedia :: Video
 Classifier: Topic :: Text Processing :: Linguistic
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
+License-File: LICENSE
 Requires-Dist: rapidfuzz>=3.0.0
 Requires-Dist: httpx>=0.25.0
 Requires-Dist: jinja2>=3.1.0
+Requires-Dist: tqdm>=4.65.0
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
@@ -26,6 +28,7 @@ Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
 Requires-Dist: black>=23.0.0; extra == "dev"
 Requires-Dist: ruff>=0.1.0; extra == "dev"
 Requires-Dist: mypy>=1.5.0; extra == "dev"
+Dynamic: license-file
 
 # SubDiff
 
@@ -33,12 +36,12 @@ Requires-Dist: mypy>=1.5.0; extra == "dev"
 
 ## Возможности
 
-- **Двухступенчатый алгоритм**: быстрое выравнивание на эвристиках + LLM-верификация только для кандидатов
-- **Экономия токенов**: LLM вызывается только для подозрительных сегментов (~5% от общего числа)
+- **Двухступенчатый алгоритм**: быстрое выравнивание на эвристиках + LLM-верификация
+- **Экономия токенов**: по умолчанию LLM вызывается только для подозрительных сегментов (кандидатов)
 - **Offline-first**: работает без LLM, используя эвристики (Jaccard, Levenshtein, 3-gram)
 - **Детекция именованных сущностей**: приоритет на ошибки в именах, названиях, терминах
 - **Устойчивость к разной сегментации**: автоматическая склейка соседних реплик
-- **Интерактивный HTML-отчёт**: красиво оформленная таблица с цветовой индикацией важности
+- **HTML-отчёт для ревью**: компактные карточки инцидентов с полными `A/B` текстами
 
 ## Установка
 
@@ -61,12 +64,31 @@ pip install -e ".[dev]"
 ### Базовый вызов
 
 ```bash
-python -m subs_diff --stt audio.srt --ref translated.srt --out report.json
+python -m subs_diff compare --stt audio.srt --ref translated.srt --out report.json
 ```
 
 Генерирует два файла:
 - `report.json` — машинно-читаемый отчёт
 - `report.html` — человекочитаемый интерактивный отчёт
+
+### Конфигурация
+
+Чтобы не вводить параметры LLM каждый раз, сохраните их в конфиг:
+
+```bash
+# Сохранить настройки
+python -m subs_diff config set --api-key sk-... --api-model meta-llama/llama-3.2-3b-instruct
+
+# Показать текущие настройки
+python -m subs_diff config show
+
+# Очистить конфиг
+python -m subs_diff config clear
+```
+
+Конфиг хранится в:
+- Windows: `%APPDATA%\SubDiff\config.json` или `~\.subs_diff_config.json`
+- Linux/Mac: `~/.config/subs_diff/config.json` или `~/.subs_diff_config.json`
 
 ### CLI опции
 
@@ -79,11 +101,23 @@ python -m subs_diff --stt audio.srt --ref translated.srt --out report.json
 | `--max-merge` | Макс. сегментов для склейки | `5` |
 | `--min-score` | Порог сходства для кандидата | `0.5` |
 | `--llm` | Режим: `off`, `auto`, `local`, `api` | `auto` |
-| `--llm-model` | Модель для local/auto | `llama3.2` |
-| `--llm-url` | URL для локальной LLM | `http://localhost:11434` |
-| `--llm-key` | API ключ для api режима | - |
-| `--llm-api-url` | URL для API LLM | `https://api.openai.com/v1` |
+| `--llm-model` | Модель для api (переопределяет конфиг) | из конфига |
+| `--llm-local-model` | Модель для local (переопределяет конфиг) | из конфига |
+| `--llm-url` | URL для локальной LLM | из конфига |
+| `--llm-key` | API ключ (переопределяет конфиг) | из конфига |
+| `--llm-api-url` | URL для API LLM | из конфига |
+| `--llm-site-url` | URL сайта для OpenRouter headers | из конфига |
+| `--llm-site-name` | Название сайта для OpenRouter | из конфига |
 | `--no-html` | Не генерировать HTML | `false` |
+| `--checkpoint` | Включить автосохранение прогресса | `false` |
+| `--checkpoint-interval` | Интервал чекпоинтов (кандидатов) | `5` |
+| `--resume` | Продолжить с partial-checkpoint из `--out` | `false` |
+| `--ref-only-missing` | Искать только элементы REF, которых нет в STT | `false` |
+| `--llm-context-size` | Размер контекста (prev/next) для LLM | `1` |
+| `--llm-debug` | Логировать запросы/ответы LLM в читаемый лог | `false` |
+| `--llm-debug-file` | Путь к debug-логу LLM | `llm_debug.log` |
+| `--check-long-segments` | Проверять длинные сегменты (> порога) | `false` |
+| `--max-segment-duration` | Макс. длительность сегмента (сек) | `6.0` |
 | `-v`, `--verbose` | Подробный вывод | `false` |
 
 ### Примеры
@@ -91,7 +125,7 @@ python -m subs_diff --stt audio.srt --ref translated.srt --out report.json
 #### Только эвристики (без LLM)
 
 ```bash
-python -m subs_diff --stt A.srt --ref B.srt --out report.json --llm off
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm off
 ```
 
 #### С локальной LLM (Ollama)
@@ -101,15 +135,59 @@ python -m subs_diff --stt A.srt --ref B.srt --out report.json --llm off
 ollama pull llama3.2
 ollama serve
 
-python -m subs_diff --stt A.srt --ref B.srt --out report.json --llm local --llm-model llama3.2
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm local
 ```
 
-#### С API (OpenAI)
+#### С API (OpenRouter)
 
 ```bash
-export OPENAI_API_KEY="sk-..."
+# Сохраните ключ в конфиг (не нужно вводить каждый раз)
+python -m subs_diff config set --api-key sk-or-... --api-model meta-llama/llama-3.2-3b-instruct
 
-python -m subs_diff --stt A.srt --ref B.srt --out report.json --llm api --llm-model gpt-4o-mini
+# Запустите сравнение (ключ берётся из конфига)
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm api
+```
+
+#### Переопределение конфига
+
+```bash
+# Использовать другую модель для этого запуска
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm api \
+    --llm-model anthropic/claude-3-haiku
+```
+
+#### Прогресс и чекпоинты
+
+```bash
+# С прогресс-баром и автосохранением каждые 10 кандидатов
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm api \
+    --checkpoint --checkpoint-interval 10
+
+# При прерывании (Ctrl+C) результаты сохраняются в report.json
+# Можно продолжить с последнего сохранённого места
+
+# Возобновление с чекпоинта
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm api \
+    --resume
+```
+
+#### Режим "только missing из REF"
+
+```bash
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json --llm api \
+    --ref-only-missing
+```
+
+#### Проверка длинных сегментов
+
+```bash
+# Найти сегменты длиннее 6 секунд и предложить точки разделения
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
+    --check-long-segments
+
+# Указать другой порог (например, 4 секунды)
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
+    --check-long-segments --max-segment-duration 4.0
 ```
 
 #### Пересборка HTML из JSON
@@ -160,9 +238,10 @@ python -m subs_diff.reporter report.json
 | Категория | Описание |
 |-----------|----------|
 | `wrong_named_entity` | Ошибка в имени, названии, топониме |
-| `missing_content` | Пропущен важныйный кусок смысла |
+| `missing_content` | Пропущен важный кусок смысла |
 | `terminology` | Ошибка в термине/жаргонизме |
 | `forced_mismatch` | Расхождение в forced-сегменте (надпись на экране) |
+| `long_segment` | Длинный сегмент с предложением разделения |
 | `other` | Другое расхождение |
 
 ### Уровни важности
@@ -184,6 +263,7 @@ subs_diff/
 ├── parser.py            # SRT парсер, токенизация, нормализация
 ├── align.py             # Выравнивание, merge сегментов
 ├── heuristics.py        # Метрики, редкие токены, детекция сущностей
+├── segments.py          # Анализ длинных сегментов, предложения разделения
 ├── llm.py               # LLM адаптер (off/local/api/auto)
 ├── report.py            # Генерация JSON и HTML отчётов
 └── reporter.py          # Утилита пересборки HTML из JSON
@@ -195,8 +275,8 @@ subs_diff/
 2. **Выравнивание**: Для каждого сегмента A поиск окна B по времени ±tol
 3. **Merge**: Проба разных комбинаций склейки (1..max_merge сегментов)
 4. **Метрики**: Вычисление Jaccard, Levenshtein, 3-gram, rare token overlap
-5. **Кандидаты**: Отбор сегментов с низким сходством или расхождением редких токенов
-6. **LLM верификация**: Для кандидатов — запрос к LLM с классификацией
+5. **Кандидаты**: Отбор сегментов по эвристикам (включая ASR-подобные искажения)
+6. **LLM верификация**: По умолчанию для кандидатов; в режиме `--ref-only-missing` — расширенная проверка aligned-пар
 7. **Отчёт**: Генерация JSON и HTML
 
 ## Запуск тестов
@@ -212,9 +292,9 @@ pytest tests/ -v --cov=subs_diff --cov-report=html
 
 Применяемые техники:
 
-1. **Кандидатный фильтр**: 95% сегментов отбрасывается эвристиками
+1. **Кандидатный фильтр (по умолчанию)**: в LLM отправляются только кандидаты
 2. **Сжатие контекста**: Удаление повторов, лимит 500 символов
-3. **JSON-only ответы**: Краткий формат без рассуждений
+3. **JSON-only ответы**: краткий формат без рассуждений
 4. **Кэширование**: Ответы кэшируются по хэшу (A_text + B_text)
 5. **Лимит токенов**: max_tokens=256, temperature=0.1
 
@@ -222,7 +302,7 @@ pytest tests/ -v --cov=subs_diff --cov-report=html
 
 | Решение | Обоснование |
 |---------|-------------|
-| Двухступенчатый пайплайн | LLM вызывается только для ~5% кандидатов |
+| Двухступенчатый пайплайн | По умолчанию LLM работает только по кандидатам; можно расширить через `--ref-only-missing` |
 | rapidfuzz для метрик | В 10-100x быстрее python-Levenshtein |
 | Встроенный CSS в HTML | Один файл для пересылки |
 | Merge до 5 сегментов | Компенсация разной сегментации |

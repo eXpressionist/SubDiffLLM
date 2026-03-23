@@ -20,6 +20,7 @@ class Category(str, Enum):
     WRONG_NAMED_ENTITY = "wrong_named_entity"
     TERMINOLOGY = "terminology"
     FORCED_MISMATCH = "forced_mismatch"
+    LONG_SEGMENT = "long_segment"
     OTHER = "other"
 
 
@@ -182,6 +183,26 @@ class Report:
 
 
 @dataclass
+class SplitSuggestion:
+    """Предложение разделения длинного сегмента."""
+
+    split_time_ms: int  # время разделения в мс
+    ref_text_before: str  # текст reference до точки разделения
+    ref_text_after: str  # текст reference после точки разделения
+    confidence: float  # уверенность в предложении (0.0-1.0)
+
+
+@dataclass
+class LongSegmentInfo:
+    """Информация о длинном сегменте."""
+
+    segment_index: int  # индекс сегмента в STT
+    segment: Segment  # сам сегмент
+    ref_segments: list["Segment"]  # соответствующие сегменты из reference
+    split_suggestions: list[SplitSuggestion]  # предложения разделения
+
+
+@dataclass
 class Config:
     """Конфигурация приложения."""
 
@@ -208,6 +229,8 @@ class Config:
     llm_context_size: int = 1  # количество сегментов контекста для LLM
     llm_debug: bool = False  # сохранять запросы/ответы LLM в файл
     llm_debug_file: str = "llm_debug.log"  # путь к debug-логу LLM
+    check_long_segments: bool = False  # проверять длинные сегменты
+    max_segment_duration: float = 6.0  # макс. длительность сегмента (секунды)
 
 
 def ms_to_srt(ms: int) -> str:

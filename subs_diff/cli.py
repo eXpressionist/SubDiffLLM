@@ -22,11 +22,14 @@ from subs_diff.types import (
     Candidate,
     MergedSegment,
     SimilarityMetrics,
+    LongSegmentInfo,
+    SplitSuggestion,
 )
 from subs_diff.parser import parse_srt_file, detect_forced_segments
 from subs_diff.align import align_segments, merge_segments
 from subs_diff.llm import create_llm_client
 from subs_diff.heuristics import compute_similarity
+from subs_diff.segments import analyze_long_segments, DEFAULT_MAX_DURATION_MS
 from subs_diff.report import (
     generate_report,
     save_report_json,
@@ -195,6 +198,47 @@ def _should_keep_issue_in_ref_only_mode(
     if llm_verdict is None:
         return False
     return llm_verdict.category in {Category.MISSING_CONTENT, Category.FORCED_MISMATCH}
+
+
+def _create_long_segment_issue(
+    long_info: LongSegmentInfo,
+    issue_id: str,
+) -> Issue:
+    """Создать Issue из информации о длинном сегменте."""
+    seg = long_info.segment
+    duration_sec = seg.duration_ms / 1000.0
+
+    ref_texts = [s.text for s in long_info.ref_segments]
+    ref_text_combined = " ".join(ref_texts) if ref_texts else ""
+
+    if long_info.split_suggestions:
+        suggestions_text = []
+        for j, sugg in enumerate(long_info.split_suggestions, 1):
+            from subs_diff.types import ms_to_srt
+            split_time_str = ms_to_srt(sugg.split_time_ms)
+            suggestions_text.append(
+                f"  {j}. Время: {split_time_str}, уверенность: {sugg.confidence:.0%}"
+            )
+        evidence = f"Предложения разделения:\n" + "\n".join(suggestions_text)
+    else:
+        evidence = "Точек разделения не найдено (нет подходящих сегментов в reference)"
+
+    b_segments_indices = [s.index for s in long_info.ref_segments]
+
+    return Issue(
+        issue_id=issue_id,
+        time_range=(seg.start_ms, seg.end_ms),
+        a_segments=[seg.index],
+        b_segments=b_segments_indices,
+        severity=Severity.MED,
+        category=Category.LONG_SEGMENT,
+        short_reason=f"Длинный сегмент: {duration_sec:.1f} сек",
+        evidence=evidence,
+        forced_detected=False,
+        llm_verdict=None,
+        a_text=seg.text,
+        b_text=ref_text_combined,
+    )
 
 
 def _build_ref_only_candidates(
@@ -398,6 +442,17 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default="llm_debug.log",
         help="Путь к человекочитаемому лог-файлу LLM (по умолчанию: llm_debug.log)",
+    )
+    compare_parser.add_argument(
+        "--check-long-segments",
+        action="store_true",
+        help="Проверять сегменты с длительностью больше порога",
+    )
+    compare_parser.add_argument(
+        "--max-segment-duration",
+        type=float,
+        default=6.0,
+        help="Макс. длительность сегмента в секундах (по умолчанию: 6.0)",
     )
     compare_parser.add_argument(
         "-v",
@@ -605,6 +660,17 @@ def create_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--check-long-segments",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--max-segment-duration",
+        type=float,
+        default=6.0,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -658,6 +724,24 @@ async def run_comparison(config: Config) -> int:
         min_score=config.min_score,
     )
     logger.info(f"  Найдено {len(result.candidates)} кандидатов")
+
+    # Проверка длинных сегментов
+    long_segment_issues: list[Issue] = []
+    if getattr(config, "check_long_segments", False):
+        max_duration_ms = int(getattr(config, "max_segment_duration", 6.0) * 1000)
+        logger.info(f"Проверка длинных сегментов (>{config.max_segment_duration:.1f} сек)...")
+        long_segments = analyze_long_segments(
+            segments_a,
+            segments_b,
+            max_duration_ms=max_duration_ms,
+            time_tol_ms=int(config.time_tol * 1000),
+        )
+        logger.info(f"  Найдено {len(long_segments)} длинных сегментов")
+
+        for i, long_info in enumerate(long_segments):
+            issue_id = f"LONG-{i + 1:03d}"
+            issue = _create_long_segment_issue(long_info, issue_id)
+            long_segment_issues.append(issue)
 
     # LLM верификация
     llm_client = create_llm_client(
@@ -799,6 +883,12 @@ async def run_comparison(config: Config) -> int:
 
     # Сортируем по времени
     issues.sort(key=lambda x: x.time_range[0])
+
+    # Добавляем длинные сегменты в отчёт
+    if long_segment_issues:
+        issues.extend(long_segment_issues)
+        issues.sort(key=lambda x: x.time_range[0])
+        logger.info(f"  Добавлено {len(long_segment_issues)} длинных сегментов")
 
     logger.info(f"  Итого проблем: {len(issues)}")
 
@@ -989,6 +1079,8 @@ def run_compare(args) -> int:
         llm_context_size=args.llm_context_size,
         llm_debug=args.llm_debug,
         llm_debug_file=args.llm_debug_file,
+        check_long_segments=getattr(args, "check_long_segments", False),
+        max_segment_duration=getattr(args, "max_segment_duration", 6.0),
     )
 
     # Запускаем асинхронно
