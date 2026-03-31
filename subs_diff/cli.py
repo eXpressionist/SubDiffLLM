@@ -90,6 +90,7 @@ TRIVIAL_MISSING_TOKENS = {
     "а", "и", "но", "да", "же", "вот", "ну", "ли", "то", "ведь", "типа",
     "в", "во", "на", "к", "ко", "у", "с", "со", "из", "от", "до", "по", "за",
     "про", "для", "при", "о", "об", "обо", "под", "над", "через", "между",
+    "бы", "б", "просто", "как", "так", "это", "вот",
 }
 
 
@@ -455,6 +456,17 @@ def create_parser() -> argparse.ArgumentParser:
         help="Макс. длительность сегмента в секундах (по умолчанию: 6.0)",
     )
     compare_parser.add_argument(
+        "--full-context",
+        action="store_true",
+        help="Режим полного контекста: загрузить все субтитры в LLM (для моделей 1M+ токенов)",
+    )
+    compare_parser.add_argument(
+        "--full-context-max-pairs",
+        type=int,
+        default=50,
+        help="Макс. пар сегментов в одном batch-запросе (по умолчанию: 50)",
+    )
+    compare_parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -508,7 +520,7 @@ def create_parser() -> argparse.ArgumentParser:
     set_parser.add_argument(
         "--site-url",
         type=str,
-        default="https://github.com/subdiff",
+        default="https://github.com/eXpressionist/SubDiffLLM",
         help="URL сайта для OpenRouter",
     )
     set_parser.add_argument(
@@ -671,6 +683,17 @@ def create_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--full-context",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--full-context-max-pairs",
+        type=int,
+        default=50,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -777,6 +800,112 @@ async def run_comparison(config: Config) -> int:
         else result.candidates
     )
     total_to_verify = len(all_candidates)
+    
+    # Full-context режим: batch-верификация
+    full_context_enabled = getattr(config, "full_context", False)
+    if config.verbose or full_context_enabled:
+        logger.info(f"Full-context mode enabled: {full_context_enabled}")
+        logger.info(f"LLM available: {llm_available}")
+        logger.info(f"LLM mode: {config.llm_mode}")
+    
+    if full_context_enabled and llm_available and config.llm_mode != LLMMode.OFF:
+        logger.info(f"Full-context режим: обработка {total_to_verify} пар batch'ами по {getattr(config, 'full_context_max_pairs', 50)}...")
+        max_pairs_per_batch = getattr(config, "full_context_max_pairs", 50)
+        all_verdicts: list[Optional[LLMVerdict]] = [None] * total_to_verify
+        
+        for batch_start in range(0, total_to_verify, max_pairs_per_batch):
+            batch_end = min(batch_start + max_pairs_per_batch, total_to_verify)
+            batch_candidates = all_candidates[batch_start:batch_end]
+            
+            pairs_for_batch = []
+            for candidate in batch_candidates:
+                prev_segment = None
+                next_segment = None
+                if candidate.a_segment.indices:
+                    idx = candidate.a_segment.indices[0]
+                    if idx > 0:
+                        prev_segment = merge_segments([segments_a[idx - 1]])
+                    if idx + len(candidate.a_segment.indices) < len(segments_a):
+                        next_segment = merge_segments([segments_a[idx + len(candidate.a_segment.indices)]])
+                pairs_for_batch.append((candidate, prev_segment, next_segment))
+            
+            logger.info(f"  Обработка batch {batch_start+1}-{batch_end} из {total_to_verify}...")
+            
+            batch_verdicts = await llm_client.verify_batch(pairs_for_batch)
+            
+            for i, (verdict, candidate) in enumerate(zip(batch_verdicts, batch_candidates)):
+                all_verdicts[batch_start + i] = verdict
+            
+            _save_checkpoint(
+                [
+                    create_issue_from_candidate(all_candidates[j], f"ISS-{j+1:03d}", v)
+                    for j, v in enumerate(all_verdicts[:batch_end])
+                    if v or all_candidates[j].is_forced_like
+                ],
+                Path(config.out_file),
+                batch_end,
+                total_to_verify,
+            )
+        
+        for i, (verdict, candidate) in enumerate(zip(all_verdicts, all_candidates)):
+            if candidate.is_forced_like:
+                issues.append(create_issue_from_candidate(candidate, f"ISS-{i+1:03d}", None))
+            elif verdict and not _should_skip_trivial_missing_content(candidate, verdict):
+                issues.append(create_issue_from_candidate(candidate, f"ISS-{i+1:03d}", verdict))
+        
+        issues.sort(key=lambda x: x.time_range[0])
+        logger.info(f"  Full-context: найдено {len(issues)} проблем")
+        
+        # Добавляем длинные сегменты в отчёт
+        if long_segment_issues:
+            issues.extend(long_segment_issues)
+            issues.sort(key=lambda x: x.time_range[0])
+            logger.info(f"  Добавлено {len(long_segment_issues)} длинных сегментов")
+        
+        # Генерируем отчёт (для full-context режима)
+        logger.info(f"  Итого проблем: {len(issues)}")
+        
+        # Генерируем отчёт
+        logger.info("Генерация отчёта...")
+        
+        report_config = {
+            "time_tol": config.time_tol,
+            "max_merge": config.max_merge,
+            "min_score": config.min_score,
+            "llm_mode": config.llm_mode.value,
+            "llm_model": config.llm_model,
+            "ref_only_missing": getattr(config, "ref_only_missing", False),
+        }
+        
+        report = generate_report(
+            issues=issues,
+            stt_file=str(config.stt_file),
+            ref_file=str(config.ref_file),
+            config=report_config,
+        )
+        
+        # Сохраняем JSON
+        out_path = Path(config.out_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        save_report_json(report, out_path)
+        logger.info(f"  JSON сохранён: {out_path}")
+        
+        # Сохраняем HTML
+        if not config.no_html:
+            html_path = out_path.with_suffix(".html")
+            save_report_html(report, html_path)
+            logger.info(f"  HTML сохранён: {html_path}")
+        
+        # Выводим сводку
+        print_summary(report)
+        
+        return 0  # Завершаем полную обработку в full-context режиме
+    
+    else:
+        # Обычный режим: поочерёдная верификация
+        logger.info("Обычный режим: поочерёдная верификация кандидатов...")
+    
+    # Общие переменные для обоих режимов
     checkpoint_interval = getattr(config, 'checkpoint_interval', 5)
     use_checkpoint = getattr(config, 'checkpoint', False) or total_to_verify > 20
     resume_from = 0
@@ -1052,7 +1181,7 @@ def run_compare(args) -> int:
     llm_local_model = args.llm_local_model or llm_config.get("local_model", "llama3.2")
     llm_url = args.llm_url or llm_config.get("local_url", "http://localhost:11434")
     llm_api_url = args.llm_api_url or llm_config.get("api_url", "https://openrouter.ai/api/v1")
-    llm_site_url = args.llm_site_url or llm_config.get("site_url", "https://github.com/subdiff")
+    llm_site_url = args.llm_site_url or llm_config.get("site_url", "https://github.com/eXpressionist/SubDiffLLM")
     llm_site_name = args.llm_site_name or llm_config.get("site_name", "SubDiff")
 
     # Создаём конфигурацию
@@ -1081,6 +1210,8 @@ def run_compare(args) -> int:
         llm_debug_file=args.llm_debug_file,
         check_long_segments=getattr(args, "check_long_segments", False),
         max_segment_duration=getattr(args, "max_segment_duration", 6.0),
+        full_context=getattr(args, "full_context", False),
+        full_context_max_pairs=getattr(args, "full_context_max_pairs", 50),
     )
 
     # Запускаем асинхронно

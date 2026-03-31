@@ -200,7 +200,12 @@ def align_segments(
         if best_match:
             merged_a, merged_b, metrics = best_match
             aligned_pairs.append((merged_a, merged_b))
-            if is_candidate(metrics, min_score=min_score):
+            if is_candidate(
+                metrics, 
+                min_score=min_score,
+                a_tokens=merged_a.tokens,
+                b_tokens=merged_b.tokens,
+            ):
                 candidates.append(
                     Candidate(
                         a_segment=merged_a,
@@ -262,7 +267,12 @@ def align_segments(
         if best_temporal_a is not None:
             merged_a = merge_segments([best_temporal_a])
             metrics = compute_similarity(merged_a, merged_b)
-            if is_candidate(metrics, min_score=min_score):
+            if is_candidate(
+                metrics, 
+                min_score=min_score,
+                a_tokens=merged_a.tokens,
+                b_tokens=merged_b.tokens,
+            ):
                 candidates.append(
                     Candidate(
                         a_segment=merged_a,

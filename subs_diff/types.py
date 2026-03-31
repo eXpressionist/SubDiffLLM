@@ -218,7 +218,7 @@ class Config:
     llm_url: str = "http://localhost:11434"  # URL для local
     llm_api_url: str = "https://openrouter.ai/api/v1"  # URL для API
     llm_api_key: Optional[str] = None  # API ключ для api
-    llm_site_url: str = "https://github.com/subdiff"  # URL сайта для OpenRouter
+    llm_site_url: str = "https://github.com/eXpressionist/SubDiffLLM"  # URL сайта для OpenRouter
     llm_site_name: str = "SubDiff"  # Название сайта для OpenRouter
     no_html: bool = False  # не генерировать HTML
     checkpoint: bool = False  # включать периодическое сохранение
@@ -231,6 +231,8 @@ class Config:
     llm_debug_file: str = "llm_debug.log"  # путь к debug-логу LLM
     check_long_segments: bool = False  # проверять длинные сегменты
     max_segment_duration: float = 6.0  # макс. длительность сегмента (секунды)
+    full_context: bool = False  # режим полного контекста (загрузить все субтитры)
+    full_context_max_pairs: int = 50  # макс. пар для batch-запроса в full_context режиме
 
 
 def ms_to_srt(ms: int) -> str:

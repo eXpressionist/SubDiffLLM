@@ -185,6 +185,8 @@ def is_candidate(
     metrics: SimilarityMetrics,
     min_score: float = 0.5,
     rare_token_threshold: float = 0.5,
+    a_tokens: list[str] = None,
+    b_tokens: list[str] = None,
 ) -> bool:
     """
     Определить, является ли пара сегментов кандидатом на проблему.
@@ -193,11 +195,16 @@ def is_candidate(
     - Общее сходство ниже порога
     - ИЛИ редкие токены сильно расходятся
     - В B есть редкие токены, отсутствующие в A
+    - ИЛИ разные имена/названия (semantic mismatch)
+    - ИЛИ разные числа
+    - ИЛИ антонимы
 
     Args:
         metrics: Метрики сходства.
         min_score: Минимальный порог общего сходства.
         rare_token_threshold: Порог для rare_token_missing.
+        a_tokens: Токены из A (для семантических проверок).
+        b_tokens: Токены из B (для семантических проверок).
 
     Returns:
         True, если это кандидат на проблему.
@@ -219,7 +226,156 @@ def is_candidate(
     # В B есть редкие токены, которых нет в A
     if metrics.rare_token_missing > rare_token_threshold:
         return True
+    
+    # Семантические проверки (если переданы токены)
+    if a_tokens and b_tokens:
+        # Разные имена/названия — высокий приоритет
+        if has_different_entities(a_tokens, b_tokens):
+            return True
+        
+        # Разные числа
+        if has_different_numbers(a_tokens, b_tokens):
+            return True
+        
+        # Антонимы (противоположные по смыслу слова)
+        if has_antonyms(a_tokens, b_tokens):
+            return True
 
+    return False
+
+
+# Антонимы (пары противоположных слов)
+ANTONYMS = {
+    # Русские
+    ("да", "нет"), ("можно", "нельзя"), ("надо", "не надо"),
+    ("хорошо", "плохо"), ("большой", "маленький"), ("много", "мало"),
+    ("быстро", "медленно"), ("рано", "поздно"), ("вчера", "завтра"),
+    ("утро", "вечер"), ("день", "ночь"), ("лето", "зима"),
+    ("начало", "конец"), ("первый", "последний"), ("старый", "новый"),
+    ("открыть", "закрыть"), ("войти", "выйти"), ("прийти", "уйти"),
+    ("взять", "дать"), ("купить", "продать"), ("найти", "потерять"),
+    ("жить", "умереть"), ("любить", "ненавидеть"), ("друг", "враг"),
+    ("восток", "запад"), ("север", "юг"), ("лево", "право"),
+    ("верх", "низ"), ("вперёд", "назад"), ("туда", "сюда"),
+    ("ист", "вест"), ("ист-энд", "вест-энд"),  # районы Лондона
+    # Английские
+    ("yes", "no"), ("can", "cannot"), ("good", "bad"),
+    ("big", "small"), ("many", "few"), ("fast", "slow"),
+    ("early", "late"), ("yesterday", "tomorrow"),
+    ("morning", "evening"), ("day", "night"), ("summer", "winter"),
+    ("begin", "end"), ("first", "last"), ("old", "new"),
+    ("open", "close"), ("enter", "exit"), ("come", "go"),
+    ("take", "give"), ("buy", "sell"), ("find", "lose"),
+    ("live", "die"), ("love", "hate"), ("friend", "enemy"),
+    ("east", "west"), ("north", "south"), ("left", "right"),
+    ("up", "down"), ("forward", "backward"),
+}
+
+# Разворачиваем в словарь для быстрого поиска
+ANTONYM_MAP = {}
+for w1, w2 in ANTONYMS:
+    ANTONYM_MAP[w1.lower()] = w2.lower()
+    ANTONYM_MAP[w2.lower()] = w1.lower()
+
+
+def has_different_entities(a_tokens: list[str], b_tokens: list[str]) -> bool:
+    """
+    Проверить, есть ли разные именованные сущности в A и B.
+    
+    Считаем что имена разные, если:
+    - Оба сегмента содержат имена с заглавной буквы
+    - Имена не совпадают
+    
+    Args:
+        a_tokens: Токены из A.
+        b_tokens: Токены из B.
+    
+    Returns:
+        True, если есть разные имена/названия.
+    """
+    entities_a = set(detect_named_entities(a_tokens))
+    entities_b = set(detect_named_entities(b_tokens))
+    
+    # Если в обоих есть сущности
+    if entities_a and entities_b:
+        # Приводим к нижнему регистру для сравнения
+        entities_a_lower = {e.lower() for e in entities_a}
+        entities_b_lower = {e.lower() for e in entities_b}
+        
+        # Если множества не пересекаются — разные имена
+        if not entities_a_lower.intersection(entities_b_lower):
+            return True
+        
+        # Если есть непересекающиеся элементы — тоже кандидат
+        diff_a = entities_a_lower - entities_b_lower
+        diff_b = entities_b_lower - entities_a_lower
+        
+        # Игнорируем служебные слова
+        trivial = {"да", "нет", "вот", "это", "как", "там", "тут", "тебя", "меня"}
+        diff_a -= trivial
+        diff_b -= trivial
+        
+        if diff_a or diff_b:
+            return True
+    
+    return False
+
+
+def has_different_numbers(a_tokens: list[str], b_tokens: list[str]) -> bool:
+    """
+    Проверить, есть ли разные числа в A и B.
+    
+    Args:
+        a_tokens: Токены из A.
+        b_tokens: Токены из B.
+    
+    Returns:
+        True, если числа отличаются.
+    """
+    def extract_numbers(tokens: list[str]) -> set[str]:
+        numbers = set()
+        for token in tokens:
+            # Чистые числа
+            if token.isdigit():
+                numbers.add(token)
+            # Числа с суффиксами (1-й, 2-го и т.п.)
+            elif re.match(r"^\d+[-\w]*$", token):
+                numbers.add(re.match(r"^\d+", token).group())
+        return numbers
+    
+    nums_a = extract_numbers(a_tokens)
+    nums_b = extract_numbers(b_tokens)
+    
+    if nums_a and nums_b:
+        # Если множества чисел не равны — кандидат
+        if nums_a != nums_b:
+            return True
+    
+    return False
+
+
+def has_antonyms(a_tokens: list[str], b_tokens: list[str]) -> bool:
+    """
+    Проверить, есть ли антонимы между A и B.
+    
+    Антонимы — слова с противоположным смыслом (да/нет, восток/запад).
+    
+    Args:
+        a_tokens: Токены из A.
+        b_tokens: Токены из B.
+    
+    Returns:
+        True, если найдены антонимы.
+    """
+    a_lower = {t.lower() for t in a_tokens}
+    b_lower = {t.lower() for t in b_tokens}
+    
+    for token_a in a_lower:
+        if token_a in ANTONYM_MAP:
+            antonym = ANTONYM_MAP[token_a]
+            if antonym in b_lower:
+                return True
+    
     return False
 
 

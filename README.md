@@ -86,6 +86,8 @@ python -m subs_diff config clear
 | `--llm-debug-file` | Путь к debug-логу LLM | `llm_debug.log` |
 | `--check-long-segments` | Проверять длинные сегменты (> порога) | `false` |
 | `--max-segment-duration` | Макс. длительность сегмента (сек) | `6.0` |
+| `--full-context` | Режим полного контекста (1M+ токенов) | `false` |
+| `--full-context-max-pairs` | Макс. пар в batch-запросе | `50` |
 | `-v`, `--verbose` | Подробный вывод | `false` |
 
 ### Примеры
@@ -156,6 +158,21 @@ python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
 # Указать другой порог (например, 4 секунды)
 python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
     --check-long-segments --max-segment-duration 4.0
+```
+
+#### Full-context режим (для моделей с 1M+ токенов)
+
+```bash
+# Для Gemini 2.5 Pro, Claude 3.5 и других моделей с большим контекстом
+# Загружает все сегменты в одном запросе, что быстрее и даёт лучший контекст
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
+    --llm api --llm-model google/gemini-2.5-pro-preview \
+    --full-context
+
+# Настроить размер batch (по умолчанию 50 пар за запрос)
+python -m subs_diff compare --stt A.srt --ref B.srt --out report.json \
+    --llm api --llm-model google/gemini-2.5-pro-preview \
+    --full-context --full-context-max-pairs 100
 ```
 
 #### Пересборка HTML из JSON
