@@ -1,16 +1,14 @@
 """Тесты для модуля эвристик."""
 
-import pytest
-
+from subs_diff.align import merge_segments
 from subs_diff.heuristics import (
     RareTokenDetector,
+    compress_text,
     compute_similarity,
-    is_candidate,
     detect_named_entities,
     find_missing_content,
-    compress_text,
+    is_candidate,
 )
-from subs_diff.align import merge_segments
 from subs_diff.types import Segment
 
 
@@ -48,12 +46,12 @@ class TestComputeSimilarity:
     """Тесты вычисления метрик сходства."""
 
     def test_identical_texts(self):
-        seg_a = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])
-        ])
-        seg_b = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])
-        ])
+        seg_a = merge_segments(
+            [Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])]
+        )
+        seg_b = merge_segments(
+            [Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])]
+        )
 
         metrics = compute_similarity(seg_a, seg_b)
 
@@ -63,12 +61,20 @@ class TestComputeSimilarity:
         assert metrics.overall_similarity > 0.99
 
     def test_different_texts(self):
-        seg_a = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])
-        ])
-        seg_b = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Пока вселенная", tokens=["Пока", "вселенная"])
-        ])
+        seg_a = merge_segments(
+            [Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])]
+        )
+        seg_b = merge_segments(
+            [
+                Segment(
+                    index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="Пока вселенная",
+                    tokens=["Пока", "вселенная"],
+                )
+            ]
+        )
 
         metrics = compute_similarity(seg_a, seg_b)
 
@@ -76,12 +82,16 @@ class TestComputeSimilarity:
         assert metrics.overall_similarity < 0.5
 
     def test_partial_overlap(self):
-        seg_a = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])
-        ])
-        seg_b = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Привет друг", tokens=["Привет", "друг"])
-        ])
+        seg_a = merge_segments(
+            [Segment(index=0, start_ms=0, end_ms=1000, text="Привет мир", tokens=["Привет", "мир"])]
+        )
+        seg_b = merge_segments(
+            [
+                Segment(
+                    index=0, start_ms=0, end_ms=1000, text="Привет друг", tokens=["Привет", "друг"]
+                )
+            ]
+        )
 
         metrics = compute_similarity(seg_a, seg_b)
 
@@ -89,12 +99,28 @@ class TestComputeSimilarity:
         assert 0.3 <= metrics.jaccard <= 0.4
 
     def test_rare_token_mismatch(self):
-        seg_a = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Шерлок Холмс", tokens=["Шерлок", "Холмс"])
-        ])
-        seg_b = merge_segments([
-            Segment(index=0, start_ms=0, end_ms=1000, text="Шерлок Стаут", tokens=["Шерлок", "Стаут"])
-        ])
+        seg_a = merge_segments(
+            [
+                Segment(
+                    index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="Шерлок Холмс",
+                    tokens=["Шерлок", "Холмс"],
+                )
+            ]
+        )
+        seg_b = merge_segments(
+            [
+                Segment(
+                    index=0,
+                    start_ms=0,
+                    end_ms=1000,
+                    text="Шерлок Стаут",
+                    tokens=["Шерлок", "Стаут"],
+                )
+            ]
+        )
 
         metrics = compute_similarity(seg_a, seg_b)
 

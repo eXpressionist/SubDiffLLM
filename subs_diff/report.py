@@ -3,21 +3,21 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
-
-from jinja2 import Template
+from typing import Any
 
 from subs_diff.types import (
+    Candidate,
+    Category,
     Issue,
+    LLMVerdict,
     Report,
     ReportMetadata,
     ReportSummary,
     Severity,
-    Category,
-    Candidate,
-    LLMVerdict,
     ms_to_srt,
 )
+
+REPORT_SCHEMA_VERSION = 1
 
 
 # HTML-шаблон отчёта со встроенными стилями
@@ -157,7 +157,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             {% for issue in issues %}
             <article class="issue">
                 <div class="row">
-                    <span class="time">{{ issue.time_range.0 | ms_to_time }} → {{ issue.time_range.1 | ms_to_time }}</span>
+                    <span class="time">
+                        {{ issue.time_range.0 | ms_to_time }} →
+                        {{ issue.time_range.1 | ms_to_time }}
+                    </span>
                     <span class="badge sev-{{ issue.severity }}">{{ issue.severity }}</span>
                     <span class="badge">{{ issue.category }}</span>
                     {% if issue.forced_detected %}<span class="badge">forced</span>{% endif %}
@@ -167,7 +170,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                 {% if issue.category == "long_segment" %}
                 <div class="block-title" style="margin-top: 8px;">Предложения разделения</div>
-                <pre class="text-block" style="background: #fff8e1;">{{ issue.evidence if issue.evidence else "(нет предложений)" }}</pre>
+                <pre class="text-block" style="background: #fff8e1;">
+{{ issue.evidence if issue.evidence else "(нет предложений)" }}
+                </pre>
                 {% endif %}
 
                 <div class="block-title">STT (A)</div>
@@ -179,10 +184,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <details>
                     <summary>Показать детали</summary>
                     <div class="block-title">Evidence</div>
-                    <pre class="text-block">{{ issue.evidence if issue.evidence else "(нет)" }}</pre>
+                    <pre class="text-block">
+{{ issue.evidence if issue.evidence else "(нет)" }}
+                    </pre>
                     {% if issue.llm_verdict %}
                     <div class="block-title">LLM</div>
-                    <pre class="text-block">confidence={{ issue.llm_verdict.confidence }}, category={{ issue.llm_verdict.category }}, severity={{ issue.llm_verdict.severity }}</pre>
+                    <pre class="text-block">
+confidence={{ issue.llm_verdict.confidence }},
+category={{ issue.llm_verdict.category }},
+severity={{ issue.llm_verdict.severity }}
+                    </pre>
                     {% endif %}
                 </details>
             </article>
@@ -205,7 +216,7 @@ def generate_report(
     issues: list[Issue],
     stt_file: str,
     ref_file: str,
-    config: dict,
+    config: dict[str, Any],
 ) -> Report:
     """
     Сгенерировать полный отчёт.
@@ -259,6 +270,7 @@ def report_to_dict(report: Report) -> dict[str, Any]:
         Словарь для JSON.
     """
     return {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "metadata": {
             "generated_at": report.metadata.generated_at,
             "stt_file": report.metadata.stt_file,
@@ -305,6 +317,64 @@ def report_to_dict(report: Report) -> dict[str, Any]:
     }
 
 
+def llm_verdict_from_dict(data: dict[str, Any] | None) -> LLMVerdict | None:
+    """Restore an LLM verdict from JSON-compatible data."""
+    if not data:
+        return None
+
+    return LLMVerdict(
+        severity=Severity(data["severity"]),
+        category=Category(data["category"]),
+        short_reason=data["short_reason"],
+        evidence=data["evidence"],
+        confidence=float(data.get("confidence", 0.5)),
+        suggested_fix=data.get("suggested_fix"),
+        is_forced=bool(data.get("is_forced", False)),
+    )
+
+
+def issue_from_dict(data: dict[str, Any]) -> Issue:
+    """Restore an issue from JSON-compatible data."""
+    return Issue(
+        issue_id=data["issue_id"],
+        time_range=(
+            data["time_range"]["start_ms"],
+            data["time_range"]["end_ms"],
+        ),
+        a_segments=data["a_segments"],
+        b_segments=data["b_segments"],
+        severity=Severity(data["severity"]),
+        category=Category(data["category"]),
+        short_reason=data["short_reason"],
+        evidence=data["evidence"],
+        forced_detected=bool(data["forced_detected"]),
+        llm_verdict=llm_verdict_from_dict(data.get("llm_verdict")),
+        a_text=data.get("a_text", ""),
+        b_text=data.get("b_text", ""),
+    )
+
+
+def report_from_dict(data: dict[str, Any]) -> Report:
+    """Restore a report from JSON-compatible data."""
+    metadata_data = data["metadata"]
+    summary_data = data["summary"]
+
+    return Report(
+        metadata=ReportMetadata(
+            generated_at=metadata_data["generated_at"],
+            stt_file=metadata_data["stt_file"],
+            ref_file=metadata_data["ref_file"],
+            config=metadata_data["config"],
+        ),
+        issues=[issue_from_dict(issue_data) for issue_data in data.get("issues", [])],
+        summary=ReportSummary(
+            total_issues=summary_data["total_issues"],
+            by_severity=summary_data["by_severity"],
+            by_category=summary_data["by_category"],
+        ),
+    )
+
+
 def save_report_json(report: Report, filepath: str | Path) -> None:
     """
     Сохранить отчёт в JSON файл.
@@ -318,6 +388,14 @@ def save_report_json(report: Report, filepath: str | Path) -> None:
 
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_report_json(filepath: str | Path) -> Report:
+    """Load a report JSON file into dataclasses."""
+    path = Path(filepath)
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    return report_from_dict(data)
 
 
 def save_report_html(report: Report, filepath: str | Path) -> None:
@@ -345,7 +423,9 @@ def save_report_html(report: Report, filepath: str | Path) -> None:
         f.write(html_content)
 
 
-def generate_html_from_json(json_filepath: str | Path, output_html: str | Path | None = None) -> str:
+def generate_html_from_json(
+    json_filepath: str | Path, output_html: str | Path | None = None
+) -> str:
     """
     Сгенерировать HTML из готового JSON файла.
 
@@ -356,63 +436,7 @@ def generate_html_from_json(json_filepath: str | Path, output_html: str | Path |
     Returns:
         HTML содержимое.
     """
-    json_path = Path(json_filepath)
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    # Восстанавливаем объекты из словаря
-    issues = []
-    for issue_data in data["issues"]:
-        llm_verdict = None
-        if issue_data.get("llm_verdict"):
-            v = issue_data["llm_verdict"]
-            llm_verdict = LLMVerdict(
-                severity=Severity(v["severity"]),
-                category=Category(v["category"]),
-                short_reason=v["short_reason"],
-                evidence=v["evidence"],
-                confidence=v["confidence"],
-                suggested_fix=v.get("suggested_fix"),
-                is_forced=v.get("is_forced", False),
-            )
-
-        issue = Issue(
-            issue_id=issue_data["issue_id"],
-            time_range=(
-                issue_data["time_range"]["start_ms"],
-                issue_data["time_range"]["end_ms"],
-            ),
-            a_segments=issue_data["a_segments"],
-            b_segments=issue_data["b_segments"],
-            severity=Severity(issue_data["severity"]),
-            category=Category(issue_data["category"]),
-            short_reason=issue_data["short_reason"],
-            evidence=issue_data["evidence"],
-            forced_detected=issue_data["forced_detected"],
-            llm_verdict=llm_verdict,
-            a_text=issue_data.get("a_text", ""),
-            b_text=issue_data.get("b_text", ""),
-        )
-        issues.append(issue)
-
-    metadata = ReportMetadata(
-        generated_at=data["metadata"]["generated_at"],
-        stt_file=data["metadata"]["stt_file"],
-        ref_file=data["metadata"]["ref_file"],
-        config=data["metadata"]["config"],
-    )
-
-    summary = ReportSummary(
-        total_issues=data["summary"]["total_issues"],
-        by_severity=data["summary"]["by_severity"],
-        by_category=data["summary"]["by_category"],
-    )
-
-    report = Report(
-        metadata=metadata,
-        issues=issues,
-        summary=summary,
-    )
+    report = load_report_json(json_filepath)
 
     # Генерируем HTML
     from jinja2 import Environment
@@ -438,7 +462,7 @@ def generate_html_from_json(json_filepath: str | Path, output_html: str | Path |
 def create_issue_from_candidate(
     candidate: Candidate,
     issue_id: str,
-    llm_verdict: Optional[LLMVerdict] = None,
+    llm_verdict: LLMVerdict | None = None,
 ) -> Issue:
     """
     Создать Issue из Candidate и LLM вердикта.

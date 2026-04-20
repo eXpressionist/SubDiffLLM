@@ -41,7 +41,7 @@ def main() -> int:
 
     # Генерируем HTML
     try:
-        html_content = generate_html_from_json(json_path, output_path)
+        generate_html_from_json(json_path, output_path)
         print(f"HTML отчёт сохранён: {output_path}")
         return 0
     except Exception as e:

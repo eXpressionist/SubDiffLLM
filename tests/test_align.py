@@ -1,17 +1,17 @@
 """Тесты для модуля выравнивания."""
 
-import pytest
 from pathlib import Path
 
-from subs_diff.parser import parse_srt_file
+import pytest
+
 from subs_diff.align import (
+    align_segments,
     find_time_window,
     merge_segments,
-    align_segments,
     stable_align,
 )
-from subs_diff.types import Segment, MergedSegment
-
+from subs_diff.parser import parse_srt_file
+from subs_diff.types import Segment
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -118,7 +118,9 @@ class TestAlignSegments:
     def test_align_with_different_segmentation(self):
         # Разная сегментация: 1 сегмент в A = 2 сегмента в B
         segments_a = [
-            Segment(index=0, start_ms=1000, end_ms=4000, text="Привет мир", tokens=["Привет", "мир"]),
+            Segment(
+                index=0, start_ms=1000, end_ms=4000, text="Привет мир", tokens=["Привет", "мир"]
+            ),
         ]
 
         segments_b = [
@@ -134,11 +136,15 @@ class TestAlignSegments:
     def test_align_with_mismatch(self):
         # Сегменты с расхождением в тексте
         segments_a = [
-            Segment(index=0, start_ms=1000, end_ms=2000, text="Шерлок Холмс", tokens=["Шерлок", "Холмс"]),
+            Segment(
+                index=0, start_ms=1000, end_ms=2000, text="Шерлок Холмс", tokens=["Шерлок", "Холмс"]
+            ),
         ]
 
         segments_b = [
-            Segment(index=0, start_ms=1000, end_ms=2000, text="Шерлок Стаут", tokens=["Шерлок", "Стаут"]),
+            Segment(
+                index=0, start_ms=1000, end_ms=2000, text="Шерлок Стаут", tokens=["Шерлок", "Стаут"]
+            ),
         ]
 
         # С низким min_score кандидат может не детектироваться эвристиками
@@ -185,7 +191,17 @@ class TestAlignSegments:
                 start_ms=82232,
                 end_ms=85131,
                 text="Я тот, кого вы вызываете, когда всё идёт наперекосяк.",
-                tokens=["Я", "тот", "кого", "вы", "вызываете", "когда", "всё", "идёт", "наперекосяк"],
+                tokens=[
+                    "Я",
+                    "тот",
+                    "кого",
+                    "вы",
+                    "вызываете",
+                    "когда",
+                    "всё",
+                    "идёт",
+                    "наперекосяк",
+                ],
             )
         ]
 

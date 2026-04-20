@@ -3,14 +3,14 @@
 __version__ = "0.1.0"
 
 from subs_diff.types import (
-    Segment,
     Candidate,
-    Issue,
-    Severity,
     Category,
+    Config,
+    Issue,
     LLMVerdict,
     Report,
-    Config,
+    Segment,
+    Severity,
 )
 
 __all__ = [

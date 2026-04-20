@@ -2,7 +2,7 @@
 
 import json
 
-from subs_diff.cli import _load_resume_checkpoint
+from subs_diff.checkpoint import load_resume_checkpoint
 
 
 def test_load_resume_checkpoint(tmp_path):
@@ -30,12 +30,34 @@ def test_load_resume_checkpoint(tmp_path):
                 "b_text": "B",
             }
         ],
-        "summary": {"total_issues": 1, "by_severity": {"med": 1}, "by_category": {"missing_content": 1}},
+        "summary": {
+            "total_issues": 1,
+            "by_severity": {"med": 1},
+            "by_category": {"missing_content": 1},
+        },
     }
     report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    issues, processed = _load_resume_checkpoint(report_path)
+    issues, processed = load_resume_checkpoint(report_path)
     assert processed == 7
     assert len(issues) == 1
     assert issues[0].issue_id == "ISS-001"
 
+
+def test_load_resume_checkpoint_ignores_final_report(tmp_path):
+    report_path = tmp_path / "report.json"
+    payload = {
+        "metadata": {
+            "generated_at": "2026-01-01T00:00:00Z",
+            "stt_file": "a.srt",
+            "ref_file": "b.srt",
+            "config": {"partial": False, "processed": 7, "total": 10},
+        },
+        "issues": [],
+        "summary": {"total_issues": 0, "by_severity": {}, "by_category": {}},
+    }
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    issues, processed = load_resume_checkpoint(report_path)
+    assert processed == 0
+    assert issues == []

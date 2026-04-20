@@ -1,16 +1,20 @@
 """Тесты фильтрации trivial missing_content."""
 
 from subs_diff.align import merge_segments
-from subs_diff.cli import (
-    _should_skip_trivial_missing_content,
+from subs_diff.comparison import (
     _should_keep_issue_in_ref_only_mode,
+    _should_skip_trivial_missing_content,
 )
-from subs_diff.types import Segment, Candidate, SimilarityMetrics, LLMVerdict, Severity, Category
+from subs_diff.types import Candidate, Category, LLMVerdict, Segment, Severity, SimilarityMetrics
 
 
 def _dummy_candidate(a_tokens: list[str], b_tokens: list[str]) -> Candidate:
-    a = merge_segments([Segment(index=0, start_ms=0, end_ms=1000, text=" ".join(a_tokens), tokens=a_tokens)])
-    b = merge_segments([Segment(index=0, start_ms=0, end_ms=1000, text=" ".join(b_tokens), tokens=b_tokens)])
+    a = merge_segments(
+        [Segment(index=0, start_ms=0, end_ms=1000, text=" ".join(a_tokens), tokens=a_tokens)]
+    )
+    b = merge_segments(
+        [Segment(index=0, start_ms=0, end_ms=1000, text=" ".join(b_tokens), tokens=b_tokens)]
+    )
     metrics = SimilarityMetrics(
         jaccard=0.0,
         char_3gram=0.0,

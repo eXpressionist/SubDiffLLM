@@ -1,10 +1,9 @@
 """Выравнивание сегментов и merge операций."""
 
 from dataclasses import dataclass
-from typing import Iterable
 
-from subs_diff.types import Segment, MergedSegment, Candidate, SimilarityMetrics
-from subs_diff.heuristics import compute_similarity, is_candidate, RareTokenDetector
+from subs_diff.heuristics import compute_similarity, is_candidate
+from subs_diff.types import Candidate, MergedSegment, Segment, SimilarityMetrics
 
 
 @dataclass
@@ -201,7 +200,7 @@ def align_segments(
             merged_a, merged_b, metrics = best_match
             aligned_pairs.append((merged_a, merged_b))
             if is_candidate(
-                metrics, 
+                metrics,
                 min_score=min_score,
                 a_tokens=merged_a.tokens,
                 b_tokens=merged_b.tokens,
@@ -268,7 +267,7 @@ def align_segments(
             merged_a = merge_segments([best_temporal_a])
             metrics = compute_similarity(merged_a, merged_b)
             if is_candidate(
-                metrics, 
+                metrics,
                 min_score=min_score,
                 a_tokens=merged_a.tokens,
                 b_tokens=merged_b.tokens,
@@ -290,8 +289,12 @@ def align_segments(
                 ),
                 b_segment=merged_b,
                 metrics=SimilarityMetrics(
-                    jaccard=0.0, char_3gram=0.0, levenshtein=0.0,
-                    length_ratio=0.0, rare_token_overlap=0.0, rare_token_missing=1.0,
+                    jaccard=0.0,
+                    char_3gram=0.0,
+                    levenshtein=0.0,
+                    length_ratio=0.0,
+                    rare_token_overlap=0.0,
+                    rare_token_missing=1.0,
                 ),
                 is_forced_like=True,
             )

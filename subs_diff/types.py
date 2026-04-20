@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any
 
 
 class Severity(str, Enum):
@@ -132,7 +132,7 @@ class LLMVerdict:
     short_reason: str
     evidence: str
     confidence: float  # 0.0 - 1.0
-    suggested_fix: Optional[str] = None
+    suggested_fix: str | None = None
     is_forced: bool = False
 
 
@@ -149,7 +149,7 @@ class Issue:
     short_reason: str
     evidence: str
     forced_detected: bool
-    llm_verdict: Optional[LLMVerdict] = None
+    llm_verdict: LLMVerdict | None = None
     a_text: str = ""  # текст из A (для отчёта)
     b_text: str = ""  # текст из B (для отчёта)
 
@@ -161,7 +161,7 @@ class ReportMetadata:
     generated_at: str
     stt_file: str
     ref_file: str
-    config: dict
+    config: dict[str, Any]
 
 
 @dataclass
@@ -217,7 +217,7 @@ class Config:
     llm_local_model: str = "llama3.2"  # модель для local
     llm_url: str = "http://localhost:11434"  # URL для local
     llm_api_url: str = "https://openrouter.ai/api/v1"  # URL для API
-    llm_api_key: Optional[str] = None  # API ключ для api
+    llm_api_key: str | None = None  # API ключ для api
     llm_site_url: str = "https://github.com/eXpressionist/SubDiffLLM"  # URL сайта для OpenRouter
     llm_site_name: str = "SubDiff"  # Название сайта для OpenRouter
     no_html: bool = False  # не генерировать HTML

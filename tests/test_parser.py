@@ -1,17 +1,17 @@
 """Тесты для парсера SRT."""
 
-import pytest
 from pathlib import Path
 
+import pytest
+
 from subs_diff.parser import (
+    detect_forced_segments,
+    normalize_text,
     parse_srt,
     parse_srt_file,
     tokenize,
-    normalize_text,
-    detect_forced_segments,
 )
-from subs_diff.types import srt_to_ms, ms_to_srt
-
+from subs_diff.types import ms_to_srt, srt_to_ms
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

@@ -1,14 +1,12 @@
 """Функции для анализа и разделения длинных сегментов."""
 
 import re
-from typing import Optional
 
 from subs_diff.types import (
-    Segment,
     LongSegmentInfo,
+    Segment,
     SplitSuggestion,
 )
-
 
 DEFAULT_MAX_DURATION_MS = 6000
 
@@ -89,9 +87,8 @@ def propose_split_points(
 
     sorted_refs = sorted(ref_segments, key=lambda s: s.start_ms)
 
-    for i, ref_seg in enumerate(sorted_refs):
+    for ref_seg in sorted_refs:
         ref_start = ref_seg.start_ms
-        ref_end = ref_seg.end_ms
 
         if ref_start <= stt_start:
             continue
@@ -123,7 +120,9 @@ def propose_split_points(
 
         for other_ref in sorted_refs:
             if other_ref.end_ms <= ref_start:
-                overlap_before += min(other_ref.end_ms, ref_start) - max(other_ref.start_ms, stt_start)
+                overlap_before += min(other_ref.end_ms, ref_start) - max(
+                    other_ref.start_ms, stt_start
+                )
             elif other_ref.start_ms >= ref_start:
                 overlap_after += min(other_ref.end_ms, stt_end) - max(other_ref.start_ms, ref_start)
 
@@ -208,12 +207,15 @@ def format_split_suggestion(
     part2_start = ms_to_srt(suggestion.split_time_ms)
     part2_end = ms_to_srt(stt_segment.end_ms)
 
+    before_suffix = "..." if len(suggestion.ref_text_before) > 100 else ""
+    after_suffix = "..." if len(suggestion.ref_text_after) > 100 else ""
+
     lines = [
         f"Предложение разделения в {split_time_str}:",
         f"  Часть 1: {part1_start} --> {part1_end}",
-        f"    Reference текст: {suggestion.ref_text_before[:100]}{'...' if len(suggestion.ref_text_before) > 100 else ''}",
+        f"    Reference текст: {suggestion.ref_text_before[:100]}{before_suffix}",
         f"  Часть 2: {part2_start} --> {part2_end}",
-        f"    Reference текст: {suggestion.ref_text_after[:100]}{'...' if len(suggestion.ref_text_after) > 100 else ''}",
+        f"    Reference текст: {suggestion.ref_text_after[:100]}{after_suffix}",
         f"  Уверенность: {suggestion.confidence:.0%}",
     ]
     return "\n".join(lines)

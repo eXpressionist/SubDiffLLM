@@ -3,8 +3,9 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, cast
 
+ConfigDict = dict[str, Any]
 
 # Пути для поиска конфига
 CONFIG_LOCATIONS = [
@@ -15,7 +16,13 @@ CONFIG_LOCATIONS = [
     # AppData (Windows)
     Path(os.environ.get("APPDATA", "")) / "SubDiff" / "config.json" if os.name == "nt" else None,
     # XDG (Linux/Mac)
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "subs_diff" / "config.json" if os.name != "nt" else None,
+    (
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        / "subs_diff"
+        / "config.json"
+        if os.name != "nt"
+        else None
+    ),
 ]
 
 
@@ -35,7 +42,7 @@ def get_config_path() -> Path:
     return Path.home() / ".subs_diff_config.json"
 
 
-def load_config() -> dict:
+def load_config() -> ConfigDict:
     """
     Загрузить конфигурацию из файла.
 
@@ -49,13 +56,14 @@ def load_config() -> dict:
 
     try:
         with config_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as e:
         print(f"Warning: Could not load config file: {e}")
         return {}
 
 
-def save_config(config: dict) -> Path:
+def save_config(config: ConfigDict) -> Path:
     """
     Сохранить конфигурацию в файл.
 
@@ -76,7 +84,7 @@ def save_config(config: dict) -> Path:
     return config_path
 
 
-def get_llm_config() -> dict:
+def get_llm_config() -> ConfigDict:
     """
     Получить LLM-конфигурацию.
 
@@ -84,17 +92,18 @@ def get_llm_config() -> dict:
         Словарь с LLM настройками.
     """
     config = load_config()
-    return config.get("llm", {})
+    llm_config = config.get("llm", {})
+    return llm_config if isinstance(llm_config, dict) else {}
 
 
 def save_llm_config(
-    api_key: Optional[str] = None,
-    api_url: Optional[str] = None,
-    api_model: Optional[str] = None,
-    local_url: Optional[str] = None,
-    local_model: Optional[str] = None,
-    site_url: Optional[str] = None,
-    site_name: Optional[str] = None,
+    api_key: str | None = None,
+    api_url: str | None = None,
+    api_model: str | None = None,
+    local_url: str | None = None,
+    local_model: str | None = None,
+    site_url: str | None = None,
+    site_name: str | None = None,
 ) -> Path:
     """
     Сохранить LLM-конфигурацию.
@@ -116,7 +125,7 @@ def save_llm_config(
     if "llm" not in config:
         config["llm"] = {}
 
-    llm_config = config["llm"]
+    llm_config = cast(ConfigDict, config["llm"])
 
     if api_key is not None:
         llm_config["api_key"] = api_key
@@ -136,7 +145,7 @@ def save_llm_config(
     return save_config(config)
 
 
-def get_api_key() -> Optional[str]:
+def get_api_key() -> str | None:
     """
     Получить API ключ из конфига или окружения.
 
@@ -145,8 +154,9 @@ def get_api_key() -> Optional[str]:
     """
     # Сначала пробуем из конфига
     llm_config = get_llm_config()
-    if llm_config.get("api_key"):
-        return llm_config["api_key"]
+    api_key = llm_config.get("api_key")
+    if isinstance(api_key, str) and api_key:
+        return api_key
 
     # Затем из окружения
     return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")

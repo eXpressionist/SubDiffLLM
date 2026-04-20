@@ -2,13 +2,12 @@
 
 import re
 from collections import Counter
-from typing import Iterable
+from collections.abc import Iterable
 
 from rapidfuzz import fuzz
 
-from subs_diff.types import SimilarityMetrics, MergedSegment
 from subs_diff.parser import normalize_text
-
+from subs_diff.types import MergedSegment, SimilarityMetrics
 
 # Паттерны для детекции редких токенов
 RARE_TOKEN_PATTERNS = [
@@ -38,8 +37,9 @@ class RareTokenDetector:
 
         if segments:
             for seg_tokens in segments:
-                self._token_frequencies.update(seg_tokens)
-                self._total_tokens += len(seg_tokens)
+                tokens = list(seg_tokens)
+                self._token_frequencies.update(tokens)
+                self._total_tokens += len(tokens)
 
     def is_rare(self, token: str) -> bool:
         """
@@ -104,8 +104,8 @@ def compute_similarity(a: MergedSegment, b: MergedSegment) -> SimilarityMetrics:
     b_norm = normalize_text(b.text)
 
     # Токены (нормализованные)
-    a_tokens = set(t.lower() for t in a.tokens)
-    b_tokens = set(t.lower() for t in b.tokens)
+    a_tokens = {t.lower() for t in a.tokens}
+    b_tokens = {t.lower() for t in b.tokens}
 
     # Jaccard similarity по токенам
     jaccard = _jaccard_similarity(a_tokens, b_tokens)
@@ -155,7 +155,7 @@ def compute_similarity(a: MergedSegment, b: MergedSegment) -> SimilarityMetrics:
     )
 
 
-def _jaccard_similarity(set_a: set, set_b: set) -> float:
+def _jaccard_similarity(set_a: set[str], set_b: set[str]) -> float:
     """Вычислить Jaccard similarity между двумя множествами."""
     if not set_a and not set_b:
         return 1.0
@@ -185,8 +185,8 @@ def is_candidate(
     metrics: SimilarityMetrics,
     min_score: float = 0.5,
     rare_token_threshold: float = 0.5,
-    a_tokens: list[str] = None,
-    b_tokens: list[str] = None,
+    a_tokens: list[str] | None = None,
+    b_tokens: list[str] | None = None,
 ) -> bool:
     """
     Определить, является ли пара сегментов кандидатом на проблему.
@@ -226,17 +226,17 @@ def is_candidate(
     # В B есть редкие токены, которых нет в A
     if metrics.rare_token_missing > rare_token_threshold:
         return True
-    
+
     # Семантические проверки (если переданы токены)
     if a_tokens and b_tokens:
         # Разные имена/названия — высокий приоритет
         if has_different_entities(a_tokens, b_tokens):
             return True
-        
+
         # Разные числа
         if has_different_numbers(a_tokens, b_tokens):
             return True
-        
+
         # Антонимы (противоположные по смыслу слова)
         if has_antonyms(a_tokens, b_tokens):
             return True
@@ -247,28 +247,67 @@ def is_candidate(
 # Антонимы (пары противоположных слов)
 ANTONYMS = {
     # Русские
-    ("да", "нет"), ("можно", "нельзя"), ("надо", "не надо"),
-    ("хорошо", "плохо"), ("большой", "маленький"), ("много", "мало"),
-    ("быстро", "медленно"), ("рано", "поздно"), ("вчера", "завтра"),
-    ("утро", "вечер"), ("день", "ночь"), ("лето", "зима"),
-    ("начало", "конец"), ("первый", "последний"), ("старый", "новый"),
-    ("открыть", "закрыть"), ("войти", "выйти"), ("прийти", "уйти"),
-    ("взять", "дать"), ("купить", "продать"), ("найти", "потерять"),
-    ("жить", "умереть"), ("любить", "ненавидеть"), ("друг", "враг"),
-    ("восток", "запад"), ("север", "юг"), ("лево", "право"),
-    ("верх", "низ"), ("вперёд", "назад"), ("туда", "сюда"),
-    ("ист", "вест"), ("ист-энд", "вест-энд"),  # районы Лондона
+    ("да", "нет"),
+    ("можно", "нельзя"),
+    ("надо", "не надо"),
+    ("хорошо", "плохо"),
+    ("большой", "маленький"),
+    ("много", "мало"),
+    ("быстро", "медленно"),
+    ("рано", "поздно"),
+    ("вчера", "завтра"),
+    ("утро", "вечер"),
+    ("день", "ночь"),
+    ("лето", "зима"),
+    ("начало", "конец"),
+    ("первый", "последний"),
+    ("старый", "новый"),
+    ("открыть", "закрыть"),
+    ("войти", "выйти"),
+    ("прийти", "уйти"),
+    ("взять", "дать"),
+    ("купить", "продать"),
+    ("найти", "потерять"),
+    ("жить", "умереть"),
+    ("любить", "ненавидеть"),
+    ("друг", "враг"),
+    ("восток", "запад"),
+    ("север", "юг"),
+    ("лево", "право"),
+    ("верх", "низ"),
+    ("вперёд", "назад"),
+    ("туда", "сюда"),
+    ("ист", "вест"),
+    ("ист-энд", "вест-энд"),  # районы Лондона
     # Английские
-    ("yes", "no"), ("can", "cannot"), ("good", "bad"),
-    ("big", "small"), ("many", "few"), ("fast", "slow"),
-    ("early", "late"), ("yesterday", "tomorrow"),
-    ("morning", "evening"), ("day", "night"), ("summer", "winter"),
-    ("begin", "end"), ("first", "last"), ("old", "new"),
-    ("open", "close"), ("enter", "exit"), ("come", "go"),
-    ("take", "give"), ("buy", "sell"), ("find", "lose"),
-    ("live", "die"), ("love", "hate"), ("friend", "enemy"),
-    ("east", "west"), ("north", "south"), ("left", "right"),
-    ("up", "down"), ("forward", "backward"),
+    ("yes", "no"),
+    ("can", "cannot"),
+    ("good", "bad"),
+    ("big", "small"),
+    ("many", "few"),
+    ("fast", "slow"),
+    ("early", "late"),
+    ("yesterday", "tomorrow"),
+    ("morning", "evening"),
+    ("day", "night"),
+    ("summer", "winter"),
+    ("begin", "end"),
+    ("first", "last"),
+    ("old", "new"),
+    ("open", "close"),
+    ("enter", "exit"),
+    ("come", "go"),
+    ("take", "give"),
+    ("buy", "sell"),
+    ("find", "lose"),
+    ("live", "die"),
+    ("love", "hate"),
+    ("friend", "enemy"),
+    ("east", "west"),
+    ("north", "south"),
+    ("left", "right"),
+    ("up", "down"),
+    ("forward", "backward"),
 }
 
 # Разворачиваем в словарь для быстрого поиска
@@ -281,101 +320,104 @@ for w1, w2 in ANTONYMS:
 def has_different_entities(a_tokens: list[str], b_tokens: list[str]) -> bool:
     """
     Проверить, есть ли разные именованные сущности в A и B.
-    
+
     Считаем что имена разные, если:
     - Оба сегмента содержат имена с заглавной буквы
     - Имена не совпадают
-    
+
     Args:
         a_tokens: Токены из A.
         b_tokens: Токены из B.
-    
+
     Returns:
         True, если есть разные имена/названия.
     """
     entities_a = set(detect_named_entities(a_tokens))
     entities_b = set(detect_named_entities(b_tokens))
-    
+
     # Если в обоих есть сущности
     if entities_a and entities_b:
         # Приводим к нижнему регистру для сравнения
         entities_a_lower = {e.lower() for e in entities_a}
         entities_b_lower = {e.lower() for e in entities_b}
-        
+
         # Если множества не пересекаются — разные имена
         if not entities_a_lower.intersection(entities_b_lower):
             return True
-        
+
         # Если есть непересекающиеся элементы — тоже кандидат
         diff_a = entities_a_lower - entities_b_lower
         diff_b = entities_b_lower - entities_a_lower
-        
+
         # Игнорируем служебные слова
         trivial = {"да", "нет", "вот", "это", "как", "там", "тут", "тебя", "меня"}
         diff_a -= trivial
         diff_b -= trivial
-        
+
         if diff_a or diff_b:
             return True
-    
+
     return False
 
 
 def has_different_numbers(a_tokens: list[str], b_tokens: list[str]) -> bool:
     """
     Проверить, есть ли разные числа в A и B.
-    
+
     Args:
         a_tokens: Токены из A.
         b_tokens: Токены из B.
-    
+
     Returns:
         True, если числа отличаются.
     """
+
     def extract_numbers(tokens: list[str]) -> set[str]:
-        numbers = set()
+        numbers: set[str] = set()
         for token in tokens:
             # Чистые числа
             if token.isdigit():
                 numbers.add(token)
             # Числа с суффиксами (1-й, 2-го и т.п.)
             elif re.match(r"^\d+[-\w]*$", token):
-                numbers.add(re.match(r"^\d+", token).group())
+                number_match = re.match(r"^\d+", token)
+                if number_match:
+                    numbers.add(number_match.group())
         return numbers
-    
+
     nums_a = extract_numbers(a_tokens)
     nums_b = extract_numbers(b_tokens)
-    
+
     if nums_a and nums_b:
         # Если множества чисел не равны — кандидат
         if nums_a != nums_b:
             return True
-    
+
     return False
 
 
 def has_antonyms(a_tokens: list[str], b_tokens: list[str]) -> bool:
     """
     Проверить, есть ли антонимы между A и B.
-    
+
     Антонимы — слова с противоположным смыслом (да/нет, восток/запад).
-    
+
     Args:
         a_tokens: Токены из A.
         b_tokens: Токены из B.
-    
+
     Returns:
         True, если найдены антонимы.
     """
     a_lower = {t.lower() for t in a_tokens}
     b_lower = {t.lower() for t in b_tokens}
-    
+
     for token_a in a_lower:
         if token_a in ANTONYM_MAP:
             antonym = ANTONYM_MAP[token_a]
             if antonym in b_lower:
                 return True
-    
+
     return False
 
 
@@ -439,21 +481,123 @@ def find_missing_content(
     # Служебные части речи (русский + английский)
     stopwords = {
         # Русские
-        "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то",
-        "но", "вы", "бы", "её", "ее", "их", "же", "за", "из", "или", "мне", "ми",
-        "мы", "ни", "о", "об", "от", "по", "под", "при", "про", "со", "ту", "ты",
-        "у", "эти", "этот", "та", "тот", "тех", "том", "сам", "там", "над", "без",
-        "для", "всё", "весь", "вся", "все", "всех", "всем", "всему", "всего",
+        "и",
+        "в",
+        "во",
+        "не",
+        "что",
+        "он",
+        "на",
+        "я",
+        "с",
+        "со",
+        "как",
+        "а",
+        "то",
+        "но",
+        "вы",
+        "бы",
+        "её",
+        "ее",
+        "их",
+        "же",
+        "за",
+        "из",
+        "или",
+        "мне",
+        "ми",
+        "мы",
+        "ни",
+        "о",
+        "об",
+        "от",
+        "по",
+        "под",
+        "при",
+        "про",
+        "ту",
+        "ты",
+        "у",
+        "эти",
+        "этот",
+        "та",
+        "тот",
+        "тех",
+        "том",
+        "сам",
+        "там",
+        "над",
+        "без",
+        "для",
+        "всё",
+        "весь",
+        "вся",
+        "все",
+        "всех",
+        "всем",
+        "всему",
+        "всего",
         # Английские
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will", "would",
-        "could", "should", "may", "might", "must", "shall", "can", "need",
-        "it", "its", "this", "that", "these", "those", "i", "you", "he", "she",
-        "we", "they", "them", "his", "her", "their", "my", "your", "our",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "we",
+        "they",
+        "them",
+        "his",
+        "her",
+        "their",
+        "my",
+        "your",
+        "our",
     }
 
-    a_lower = set(t.lower() for t in a_tokens)
+    a_lower = {t.lower() for t in a_tokens}
     missing = []
 
     for token in b_tokens:

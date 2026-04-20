@@ -4,25 +4,89 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
+from subs_diff.heuristics import compress_text, detect_named_entities
 from subs_diff.types import (
     Candidate,
-    LLMVerdict,
-    Severity,
     Category,
     LLMMode,
+    LLMVerdict,
     MergedSegment,
+    Severity,
 )
-from subs_diff.heuristics import compress_text
-from subs_diff.heuristics import find_missing_content, detect_named_entities
-
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json_value(response_text: str, expected_type: type[Any]) -> Any | None:
+    """Extract the first JSON value of expected_type from raw model text."""
+    if not response_text:
+        return None
+
+    starts = "{" if expected_type is dict else "["
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(response_text):
+        if char != starts:
+            continue
+        try:
+            value, _ = decoder.raw_decode(response_text[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, expected_type):
+            return value
+    return None
+
+
+def _verdict_from_mapping(
+    data: dict[str, Any],
+    *,
+    reason_key: str = "short_reason",
+    default_severity: Severity = Severity.LOW,
+    default_confidence: float = 0.5,
+    max_reason_chars: int = 100,
+) -> LLMVerdict | None:
+    """Convert a parsed LLM JSON object into a verdict."""
+    if not data.get("has_error", False):
+        return None
+
+    severity_map = {
+        "low": Severity.LOW,
+        "med": Severity.MED,
+        "high": Severity.HIGH,
+    }
+    severity_str = str(data.get("severity", default_severity.value)).lower()
+    severity = severity_map.get(severity_str, default_severity)
+
+    category_map = {
+        "missing_content": Category.MISSING_CONTENT,
+        "wrong_named_entity": Category.WRONG_NAMED_ENTITY,
+        "terminology": Category.TERMINOLOGY,
+        "forced_mismatch": Category.FORCED_MISMATCH,
+        "other": Category.OTHER,
+    }
+    category_str = str(data.get("category", "other")).lower()
+    category = category_map.get(category_str, Category.OTHER)
+
+    reason = (
+        data.get(reason_key) or data.get("short_reason") or data.get("reason") or "Unknown issue"
+    )
+    evidence = data.get("evidence", "")
+
+    return LLMVerdict(
+        severity=severity,
+        category=category,
+        short_reason=str(reason)[:max_reason_chars],
+        evidence=str(evidence)[:100],
+        confidence=float(data.get("confidence", default_confidence)),
+        suggested_fix=data.get("suggested_fix"),
+        is_forced=bool(data.get("is_forced", False)),
+    )
 
 
 def _write_llm_debug_event(
@@ -48,6 +112,7 @@ def _write_llm_debug_event(
     except Exception as e:
         logger.debug(f"Failed to write LLM debug log: {e}")
 
+
 # Системный промпт для LLM — строгий, без перевода
 SYSTEM_PROMPT = """Ты проверяешь качество субтитров.
 Сравни STT-субтитры (A) с reference-субтитрами (B).
@@ -62,14 +127,14 @@ SYSTEM_PROMPT = """Ты проверяешь качество субтитров
 
 1. ИМЕНА/НАЗВАНИЯ: Одинаковые ли имена, фамилии, географические названия?
    - Если имя в A отличается от B → wrong_named_entity
-   
+
 2. ТЕРМИНОЛОГИЯ: Одинаковая ли специальная терминология?
    - Если термин в A отличается от B → terminology
-   
+
 3. СМЫСЛ: Передают ли A и B одинаковый смысл?
    - Если смысл противоположный → other (high severity)
    - Если пропущен важный элемент смысла → missing_content
-   
+
 4. СОДЕРЖАНИЕ: Есть ли в B важная информация, которой нет в A?
    - Только если это важный элемент сюжета/диалога, не просто слово
 
@@ -87,7 +152,8 @@ SYSTEM_PROMPT = """Ты проверяешь качество субтитров
 {
   "has_error": true,
   "severity": "low" | "med" | "high",
-  "category": "wrong_named_entity" | "terminology" | "missing_content" | "forced_mismatch" | "other",
+  "category": "wrong_named_entity" | "terminology" |
+              "missing_content" | "forced_mismatch" | "other",
   "short_reason": "Коротко, до 60 символов",
   "evidence": "A: '...' vs B: '...'",
   "confidence": 0.0-1.0
@@ -150,7 +216,8 @@ FULL_CONTEXT_SYSTEM_PROMPT = """Ты проверяешь качество су�
 Пример ответа:
 [
   {"id": 1, "has_error": false},
-  {"id": 2, "has_error": true, "severity": "med", "category": "missing_content", "reason": "Пропущено имя"}
+  {"id": 2, "has_error": true, "severity": "med",
+   "category": "missing_content", "reason": "Пропущено имя"}
 ]
 
 Будь консервативен: при сомнении ставь has_error=false."""
@@ -165,7 +232,7 @@ FULL_CONTEXT_PROMPT_TEMPLATE = """Проверь эти пары субтитр�
 class LLMCache:
     """Кэш для LLM-ответов по хэшу текстов."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cache: dict[str, LLMVerdict] = {}
         self._hits = 0
         self._misses = 0
@@ -175,7 +242,7 @@ class LLMCache:
         combined = f"{a_text}|||{b_text}"
         return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
-    def get(self, a_text: str, b_text: str) -> Optional[LLMVerdict]:
+    def get(self, a_text: str, b_text: str) -> LLMVerdict | None:
         """Получить из кэша."""
         key = self._make_key(a_text, b_text)
         if key in self._cache:
@@ -202,9 +269,9 @@ class LLMClient(ABC):
     async def verify(
         self,
         candidate: Candidate,
-        prev_segment: Optional[MergedSegment] = None,
-        next_segment: Optional[MergedSegment] = None,
-    ) -> Optional[LLMVerdict]:
+        prev_segment: MergedSegment | None = None,
+        next_segment: MergedSegment | None = None,
+    ) -> LLMVerdict | None:
         """
         Верифицировать кандидата через LLM.
 
@@ -220,8 +287,8 @@ class LLMClient(ABC):
 
     async def verify_batch(
         self,
-        pairs: list[tuple[Candidate, Optional[MergedSegment], Optional[MergedSegment]]],
-    ) -> list[Optional[LLMVerdict]]:
+        pairs: list[tuple[Candidate, MergedSegment | None, MergedSegment | None]],
+    ) -> list[LLMVerdict | None]:
         """
         Верифицировать несколько кандидатов в одном запросе (для full-context режима).
 
@@ -245,9 +312,9 @@ class OffLLMClient(LLMClient):
     async def verify(
         self,
         candidate: Candidate,
-        prev_segment: Optional[MergedSegment] = None,
-        next_segment: Optional[MergedSegment] = None,
-    ) -> Optional[LLMVerdict]:
+        prev_segment: MergedSegment | None = None,
+        next_segment: MergedSegment | None = None,
+    ) -> LLMVerdict | None:
         return None
 
     async def is_available(self) -> bool:
@@ -262,7 +329,7 @@ class LocalLLMClient(LLMClient):
         base_url: str = "http://localhost:11434",
         model: str = "llama3.2",
         timeout: float = 30.0,
-        cache: Optional[LLMCache] = None,
+        cache: LLMCache | None = None,
         debug_enabled: bool = False,
         debug_file: str = "llm_debug.log",
     ):
@@ -272,7 +339,7 @@ class LocalLLMClient(LLMClient):
         self.cache = cache or LLMCache()
         self.debug_enabled = debug_enabled
         self.debug_file = debug_file
-        self._available: Optional[bool] = None
+        self._available: bool | None = None
 
     async def is_available(self) -> bool:
         """Проверить доступность локальной LLM."""
@@ -298,9 +365,9 @@ class LocalLLMClient(LLMClient):
     async def verify(
         self,
         candidate: Candidate,
-        prev_segment: Optional[MergedSegment] = None,
-        next_segment: Optional[MergedSegment] = None,
-    ) -> Optional[LLMVerdict]:
+        prev_segment: MergedSegment | None = None,
+        next_segment: MergedSegment | None = None,
+    ) -> LLMVerdict | None:
         """
         Верифицировать кандидата через локальную LLM.
 
@@ -397,63 +464,19 @@ class LocalLLMClient(LLMClient):
             logger.warning(f"LLM verification failed: {e}")
             return None
 
-    def _parse_response(self, response_text: str) -> Optional[LLMVerdict]:
+    def _parse_response(self, response_text: str) -> LLMVerdict | None:
         """Распарсить JSON-ответ от LLM."""
         if not response_text:
             logger.debug("Empty response text from LLM")
             return None
-        
-        try:
-            # Пытаемся найти JSON в ответе
-            start_idx = response_text.find("{")
-            end_idx = response_text.rfind("}") + 1
 
-            if start_idx == -1 or end_idx == 0:
-                # Для reasoning моделей без JSON - консервативно считаем что ошибки нет
-                logger.debug("No JSON found in LLM response, assuming no error")
-                return None
-
-            json_str = response_text[start_idx:end_idx]
-            data = json.loads(json_str)
-
-            # Новый формат: проверяем has_error
-            has_error = data.get("has_error", False)
-            if not has_error:
-                return None  # Нет ошибки
-
-            # Парсим severity
-            severity_str = data.get("severity", "low").lower()
-            severity_map = {
-                "low": Severity.LOW,
-                "med": Severity.MED,
-                "high": Severity.HIGH,
-            }
-            severity = severity_map.get(severity_str, Severity.LOW)
-
-            # Парсим категорию
-            category_str = data.get("category", "other").lower()
-            category_map = {
-                "wrong_named_entity": Category.WRONG_NAMED_ENTITY,
-                "terminology": Category.TERMINOLOGY,
-                "missing_content": Category.MISSING_CONTENT,
-                "forced_mismatch": Category.FORCED_MISMATCH,
-                "other": Category.OTHER,
-            }
-            category = category_map.get(category_str, Category.OTHER)
-
-            return LLMVerdict(
-                severity=severity,
-                category=category,
-                short_reason=data.get("short_reason", "Unknown issue")[:60],
-                evidence=data.get("evidence", "")[:100],
-                confidence=float(data.get("confidence", 0.5)),
-                suggested_fix=data.get("suggested_fix"),
-                is_forced=bool(data.get("is_forced", False)),
-            )
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse LLM JSON: {e}")
+        data = _extract_json_value(response_text, dict)
+        if data is None:
+            logger.debug("No JSON object found in LLM response, assuming no error")
             return None
+
+        try:
+            return _verdict_from_mapping(data, max_reason_chars=60)
         except Exception as e:
             logger.warning(f"Failed to parse LLM response: {e}")
             return None
@@ -466,11 +489,11 @@ class APILLLMClient(LLMClient):
         self,
         base_url: str = "https://openrouter.ai/api/v1",
         model: str = "meta-llama/llama-3.2-3b-instruct",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         timeout: float = 30.0,
-        cache: Optional[LLMCache] = None,
-        site_url: Optional[str] = None,
-        site_name: Optional[str] = None,
+        cache: LLMCache | None = None,
+        site_url: str | None = None,
+        site_name: str | None = None,
         debug_enabled: bool = False,
         debug_file: str = "llm_debug.log",
     ):
@@ -483,7 +506,7 @@ class APILLLMClient(LLMClient):
         self.site_name = site_name
         self.debug_enabled = debug_enabled
         self.debug_file = debug_file
-        self._available: Optional[bool] = None
+        self._available: bool | None = None
 
     async def is_available(self) -> bool:
         """Проверить доступность API."""
@@ -511,9 +534,9 @@ class APILLLMClient(LLMClient):
     async def verify(
         self,
         candidate: Candidate,
-        prev_segment: Optional[MergedSegment] = None,
-        next_segment: Optional[MergedSegment] = None,
-    ) -> Optional[LLMVerdict]:
+        prev_segment: MergedSegment | None = None,
+        next_segment: MergedSegment | None = None,
+    ) -> LLMVerdict | None:
         """Верифицировать кандидата через API LLM."""
         a_text = compress_text(candidate.a_segment.text, max_chars=500)
         b_text = compress_text(candidate.b_segment.text, max_chars=500)
@@ -593,19 +616,19 @@ class APILLLMClient(LLMClient):
                     return None
 
                 result = response.json()
-                
+
                 choices = result.get("choices", [])
                 if not choices:
                     logger.warning("API response missing choices")
                     return None
-                
+
                 message = choices[0].get("message", {})
                 response_text = message.get("content")
-                
+
                 # Fallback для reasoning моделей (например, Nvidia Nemotron)
                 if response_text is None:
                     response_text = message.get("reasoning")
-                
+
                 if response_text is None:
                     logger.warning("API response missing content and reasoning")
                     return None
@@ -620,90 +643,46 @@ class APILLLMClient(LLMClient):
             logger.warning(f"API verification failed: {e}")
             return None
 
-    def _parse_response(self, response_text: str) -> Optional[LLMVerdict]:
+    def _parse_response(self, response_text: str) -> LLMVerdict | None:
         """Распарсить JSON-ответ от API LLM."""
         if not response_text:
             logger.debug("Empty response text from API")
             return None
-        
-        try:
-            # Пытаемся найти JSON в ответе (для reasoning моделей)
-            start_idx = response_text.find("{")
-            end_idx = response_text.rfind("}") + 1
-            
-            if start_idx != -1 and end_idx > 0:
-                json_str = response_text[start_idx:end_idx]
-                data = json.loads(json_str)
-            else:
-                data = json.loads(response_text)
 
-            has_error = data.get("has_error", False)
-            if not has_error:
-                return None
-
-            severity_str = data.get("severity", "none").lower()
-            severity_map = {
-                "none": None,
-                "low": Severity.LOW,
-                "med": Severity.MED,
-                "high": Severity.HIGH,
-            }
-            severity = severity_map.get(severity_str)
-
-            if severity is None:
-                return None
-
-            category_str = data.get("category", "other").lower()
-            category_map = {
-                "none": Category.OTHER,
-                "missing_content": Category.MISSING_CONTENT,
-                "wrong_named_entity": Category.WRONG_NAMED_ENTITY,
-                "terminology": Category.TERMINOLOGY,
-                "forced_mismatch": Category.FORCED_MISMATCH,
-                "other": Category.OTHER,
-            }
-            category = category_map.get(category_str, Category.OTHER)
-
-            return LLMVerdict(
-                severity=severity,
-                category=category,
-                short_reason=data.get("short_reason", "Unknown issue")[:100],
-                evidence=data.get("evidence", "")[:100],
-                confidence=float(data.get("confidence", 0.5)),
-                suggested_fix=data.get("suggested_fix"),
-                is_forced=bool(data.get("is_forced", False)),
-            )
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse API JSON: {e}")
+        data = _extract_json_value(response_text, dict)
+        if data is None:
+            logger.debug("No JSON object found in API response, assuming no error")
             return None
+
+        try:
+            return _verdict_from_mapping(data)
         except Exception as e:
             logger.warning(f"Failed to parse API response: {e}")
             return None
 
     async def verify_batch(
         self,
-        pairs: list[tuple[Candidate, Optional[MergedSegment], Optional[MergedSegment]]],
-    ) -> list[Optional[LLMVerdict]]:
+        pairs: list[tuple[Candidate, MergedSegment | None, MergedSegment | None]],
+    ) -> list[LLMVerdict | None]:
         """
         Верифицировать несколько кандидатов в одном запросе (full-context режим).
-        
+
         Args:
             pairs: Список кортежей (candidate, prev_segment, next_segment).
-            
+
         Returns:
             Список LLMVerdict или None для каждой пары.
         """
         if not pairs:
             return []
-        
+
         pairs_text_parts = []
         for i, (candidate, prev_segment, next_segment) in enumerate(pairs, 1):
             a_text = compress_text(candidate.a_segment.text, max_chars=300)
             b_text = compress_text(candidate.b_segment.text, max_chars=300)
             prev_context = compress_text(prev_segment.text, max_chars=100) if prev_segment else "-"
             next_context = compress_text(next_segment.text, max_chars=100) if next_segment else "-"
-            
+
             pairs_text_parts.append(
                 f"ПАРА {i}:\n"
                 f"Контекст до: {prev_context}\n"
@@ -711,10 +690,10 @@ class APILLLMClient(LLMClient):
                 f"A: {a_text}\n"
                 f"B: {b_text}"
             )
-        
+
         pairs_text = "\n\n".join(pairs_text_parts)
         prompt = FULL_CONTEXT_PROMPT_TEMPLATE.format(pairs_text=pairs_text)
-        
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 headers = {
@@ -722,13 +701,14 @@ class APILLLMClient(LLMClient):
                     "HTTP-Referer": self.site_url or "https://github.com/subdiff",
                     "X-Title": self.site_name or "SubDiff",
                 }
-                
+
+                messages = [
+                    {"role": "system", "content": FULL_CONTEXT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
                 payload = {
                     "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
+                    "messages": messages,
                     "temperature": 0.1,
                     "max_tokens": 512,
                 }
@@ -739,21 +719,24 @@ class APILLLMClient(LLMClient):
                         "provider": "api",
                         "stage": "request",
                         "url": f"{self.base_url}/chat/completions",
-                        "payload": {"model": payload["model"], "messages_count": len(payload["messages"])},
+                        "payload": {
+                            "model": payload["model"],
+                            "messages_count": len(messages),
+                        },
                     },
                 )
-                
+
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers=headers,
                     json=payload,
                 )
-                
+
                 try:
                     response_payload = response.json()
                 except Exception:
                     response_payload = {"raw_text": response.text}
-                
+
                 _write_llm_debug_event(
                     self.debug_enabled,
                     self.debug_file,
@@ -764,93 +747,64 @@ class APILLLMClient(LLMClient):
                         "payload": response_payload,
                     },
                 )
-                
+
                 if response.status_code != 200:
                     logger.warning(f"API returned status {response.status_code}")
                     return [None] * len(pairs)
-                
+
                 result = response.json()
                 choices = result.get("choices", [])
                 if not choices:
                     logger.warning("API response missing choices")
                     return [None] * len(pairs)
-                
+
                 message = choices[0].get("message", {})
                 response_text = message.get("content") or message.get("reasoning")
-                
+
                 if response_text is None:
                     logger.warning("API response missing content and reasoning")
                     return [None] * len(pairs)
-                
+
                 return self._parse_batch_response(response_text, len(pairs))
-                
+
         except Exception as e:
             logger.warning(f"API batch verification failed: {e}")
             return [None] * len(pairs)
 
     def _parse_batch_response(
         self, response_text: str, expected_count: int
-    ) -> list[Optional[LLMVerdict]]:
+    ) -> list[LLMVerdict | None]:
         """Распарсить JSON-массив ответов от API LLM."""
-        results: list[Optional[LLMVerdict]] = [None] * expected_count
-        
+        results: list[LLMVerdict | None] = [None] * expected_count
+
         if not response_text:
             return results
-        
+
+        data = _extract_json_value(response_text, list)
+        if data is None:
+            return results
+
         try:
-            start_idx = response_text.find("[")
-            end_idx = response_text.rfind("]") + 1
-            
-            if start_idx != -1 and end_idx > 0:
-                json_str = response_text[start_idx:end_idx]
-                data = json.loads(json_str)
-            else:
-                return results
-            
-            if not isinstance(data, list):
-                return results
-            
             for item in data:
+                if not isinstance(item, dict):
+                    continue
                 idx = item.get("id", 0)
                 if idx < 1 or idx > expected_count:
                     continue
-                
+
                 has_error = item.get("has_error", False)
                 if not has_error:
                     results[idx - 1] = None
                     continue
-                
-                severity_str = item.get("severity", "low").lower()
-                severity_map = {
-                    "low": Severity.LOW,
-                    "med": Severity.MED,
-                    "high": Severity.HIGH,
-                }
-                
-                category_str = item.get("category", "other").lower()
-                category_map = {
-                    "missing_content": Category.MISSING_CONTENT,
-                    "wrong_named_entity": Category.WRONG_NAMED_ENTITY,
-                    "terminology": Category.TERMINOLOGY,
-                    "forced_mismatch": Category.FORCED_MISMATCH,
-                    "other": Category.OTHER,
-                }
-                
-                results[idx - 1] = LLMVerdict(
-                    severity=severity_map.get(severity_str, Severity.LOW),
-                    category=category_map.get(category_str, Category.OTHER),
-                    short_reason=item.get("reason", "Unknown issue")[:100],
-                    evidence="",
-                    confidence=0.7,
-                    suggested_fix=None,
-                    is_forced=False,
+
+                results[idx - 1] = _verdict_from_mapping(
+                    item,
+                    reason_key="reason",
+                    default_confidence=0.7,
                 )
-            
+
             return results
-            
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse batch API JSON: {e}")
-            return results
+
         except Exception as e:
             logger.warning(f"Failed to parse batch API response: {e}")
             return results
@@ -865,8 +819,8 @@ class AutoLLMClient(LLMClient):
         local_model: str = "llama3.2",
         api_url: str = "https://openrouter.ai/api/v1",
         api_model: str = "meta-llama/llama-3.2-3b-instruct",
-        api_key: Optional[str] = None,
-        cache: Optional[LLMCache] = None,
+        api_key: str | None = None,
+        cache: LLMCache | None = None,
         debug_enabled: bool = False,
         debug_file: str = "llm_debug.log",
     ):
@@ -885,7 +839,7 @@ class AutoLLMClient(LLMClient):
             debug_enabled=debug_enabled,
             debug_file=debug_file,
         )
-        self._selected_client: Optional[LLMClient] = None
+        self._selected_client: LLMClient | None = None
 
     async def is_available(self) -> bool:
         """Проверить доступность любого LLM."""
@@ -911,12 +865,13 @@ class AutoLLMClient(LLMClient):
     async def verify(
         self,
         candidate: Candidate,
-        prev_segment: Optional[MergedSegment] = None,
-        next_segment: Optional[MergedSegment] = None,
-    ) -> Optional[LLMVerdict]:
+        prev_segment: MergedSegment | None = None,
+        next_segment: MergedSegment | None = None,
+    ) -> LLMVerdict | None:
         """Верифицировать кандидата через доступный LLM."""
         if self._selected_client is None:
             await self.is_available()
+        assert self._selected_client is not None
 
         return await self._selected_client.verify(
             candidate, prev_segment=prev_segment, next_segment=next_segment
@@ -924,12 +879,13 @@ class AutoLLMClient(LLMClient):
 
     async def verify_batch(
         self,
-        pairs: list[tuple[Candidate, Optional[MergedSegment], Optional[MergedSegment]]],
-    ) -> list[Optional[LLMVerdict]]:
+        pairs: list[tuple[Candidate, MergedSegment | None, MergedSegment | None]],
+    ) -> list[LLMVerdict | None]:
         """Верифицировать несколько кандидатов через доступный LLM."""
         if self._selected_client is None:
             await self.is_available()
-        
+        assert self._selected_client is not None
+
         return await self._selected_client.verify_batch(pairs)
 
 
@@ -939,9 +895,9 @@ def create_llm_client(
     local_model: str = "llama3.2",
     api_url: str = "https://openrouter.ai/api/v1",
     api_model: str = "meta-llama/llama-3.2-3b-instruct",
-    api_key: Optional[str] = None,
-    site_url: Optional[str] = None,
-    site_name: Optional[str] = None,
+    api_key: str | None = None,
+    site_url: str | None = None,
+    site_name: str | None = None,
     debug_enabled: bool = False,
     debug_file: str = "llm_debug.log",
 ) -> LLMClient:
@@ -975,9 +931,14 @@ def create_llm_client(
         )
     elif mode == LLMMode.API:
         return APILLLMClient(
-            base_url=api_url, model=api_model, api_key=api_key, cache=cache,
-            site_url=site_url, site_name=site_name,
-            debug_enabled=debug_enabled, debug_file=debug_file
+            base_url=api_url,
+            model=api_model,
+            api_key=api_key,
+            cache=cache,
+            site_url=site_url,
+            site_name=site_name,
+            debug_enabled=debug_enabled,
+            debug_file=debug_file,
         )
     else:  # AUTO
         return AutoLLMClient(
@@ -995,8 +956,8 @@ def create_llm_client(
 async def verify_candidates(
     candidates: list[Candidate],
     llm_client: LLMClient,
-    progress_callback: Optional[callable] = None,
-) -> list[tuple[Candidate, Optional[LLMVerdict]]]:
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[tuple[Candidate, LLMVerdict | None]]:
     """
     Верифицировать список кандидатов через LLM.
 

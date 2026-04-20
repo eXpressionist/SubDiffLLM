@@ -1,24 +1,10 @@
 """Парсер файлов формата SRT."""
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from subs_diff.types import Segment, srt_to_ms
-
-
-# Регулярное выражение для парсинга одной записи SRT
-# Формат:
-# 1
-# 00:00:01,000 --> 00:00:04,000
-# Текст субтитра
-SRT_BLOCK_PATTERN = re.compile(
-    r"^\s*(\d+)\s*$\n"  # номер
-    r"^\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*$\n"  # тайминг
-    r"^(.+?)$"  # текст (первая строка)
-    r"(?:\n(?!^\s*$|\s*\d+\s*$).*)*",  # дополнительные строки текста (не пустые и не номер)
-    re.MULTILINE | re.DOTALL,
-)
 
 # Альтернативный паттерн для более гибкого парсинга
 SRT_TIMESTAMP_PATTERN = re.compile(
@@ -62,11 +48,6 @@ def parse_srt(content: str) -> list[Segment]:
     # Сортируем по времени начала
     segments.sort(key=lambda s: s.start_ms)
 
-    # Переназначаем индексы после сортировки
-    for i, seg in enumerate(segments):
-        # Сохраняем оригинальный индекс в тексте, если нужно
-        pass
-
     return segments
 
 
@@ -93,7 +74,7 @@ def _parse_block(block: str) -> Segment | None:
             timestamp_match = match
             break
 
-    if timestamp_line_idx is None:
+    if timestamp_line_idx is None or timestamp_match is None:
         return None
 
     # Парсим тайминг
@@ -144,7 +125,7 @@ def parse_srt_file(filepath: str | Path) -> list[Segment]:
     if not path.exists():
         raise FileNotFoundError(f"SRT file not found: {path}")
 
-    content = path.read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8-sig")
     segments = parse_srt(content)
 
     if not segments:

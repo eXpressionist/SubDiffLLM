@@ -1,16 +1,13 @@
 """Тесты для модуля segments."""
 
-import pytest
-
-from subs_diff.types import Segment, SplitSuggestion, LongSegmentInfo
 from subs_diff.segments import (
+    analyze_long_segments,
     find_long_segments,
+    find_natural_split_points,
     find_ref_segments_in_range,
     propose_split_points,
-    analyze_long_segments,
-    find_natural_split_points,
-    DEFAULT_MAX_DURATION_MS,
 )
+from subs_diff.types import LongSegmentInfo, Segment, SplitSuggestion
 
 
 def make_segment(index: int, start_ms: int, end_ms: int, text: str) -> Segment:

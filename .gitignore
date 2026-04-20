@@ -45,6 +45,11 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest_tmp/
+.pytest-run/
+test-tmp/
+.codex-pip-tmp/
+.codex-pip-cache/
 
 # Translations
 *.mo
