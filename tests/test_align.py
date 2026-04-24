@@ -212,6 +212,40 @@ class TestAlignSegments:
         assert merged_b.indices == [0]
         assert len(result.unmatched_a) == 1
 
+    def test_unmatched_reference_covered_by_neighboring_stt_merge_is_not_forced(self):
+        segments_a = [
+            Segment(
+                index=0,
+                start_ms=0,
+                end_ms=500,
+                text="The package is on",
+                tokens=["The", "package", "is", "on"],
+            ),
+            Segment(
+                index=1,
+                start_ms=3000,
+                end_ms=3500,
+                text="the table",
+                tokens=["the", "table"],
+            ),
+        ]
+        segments_b = [
+            Segment(
+                index=0,
+                start_ms=1500,
+                end_ms=2000,
+                text="package on the table",
+                tokens=["package", "on", "the", "table"],
+            )
+        ]
+
+        result = align_segments(segments_a, segments_b, time_tol=1.0, max_merge=3)
+
+        assert len(result.candidates) == 1
+        assert not result.candidates[0].is_forced_like
+        assert result.candidates[0].a_segment.indices == [0, 1]
+        assert result.candidates[0].b_segment.indices == [0]
+
 
 class TestStableAlign:
     """Тесты стабильного выравнивания."""

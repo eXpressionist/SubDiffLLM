@@ -3,9 +3,10 @@
 import asyncio
 from pathlib import Path
 
+from subs_diff import comparison
 from subs_diff.comparison import run_comparison
 from subs_diff.report import load_report_json
-from subs_diff.types import Config, LLMMode
+from subs_diff.types import Category, Config, LLMMode, LLMVerdict, Severity
 
 SRT_CONTENT = """1
 00:00:01,000 --> 00:00:02,000
@@ -53,5 +54,112 @@ def test_run_comparison_writes_json_report_with_llm_off():
         assert report.issues == []
     finally:
         for path in (stt_path, ref_path, out_path, html_path):
+            if path.exists():
+                path.unlink()
+
+
+def test_forced_like_candidate_requires_llm_confirmation(monkeypatch):
+    stt_path = Path("forced_reject_stt.srt")
+    ref_path = Path("forced_reject_ref.srt")
+    out_path = Path("forced_reject_report.json")
+
+    try:
+        stt_path.write_text(
+            """1
+00:00:10,000 --> 00:00:11,000
+Different distant line.
+""",
+            encoding="utf-8",
+        )
+        ref_path.write_text(
+            """1
+00:00:01,000 --> 00:00:02,000
+Important missing line.
+""",
+            encoding="utf-8",
+        )
+
+        class FakeLLMClient:
+            async def is_available(self):
+                return True
+
+            async def verify(self, candidate, prev_segment=None, next_segment=None):
+                assert candidate.is_forced_like
+                return None
+
+        monkeypatch.setattr(comparison, "create_llm_client", lambda **kwargs: FakeLLMClient())
+
+        config = Config(
+            stt_file=str(stt_path),
+            ref_file=str(ref_path),
+            out_file=str(out_path),
+            llm_mode=LLMMode.API,
+            no_html=True,
+        )
+
+        exit_code = asyncio.run(run_comparison(config))
+
+        assert exit_code == 0
+        report = load_report_json(out_path)
+        assert report.issues == []
+    finally:
+        for path in (stt_path, ref_path, out_path):
+            if path.exists():
+                path.unlink()
+
+
+def test_forced_like_candidate_kept_when_llm_confirms(monkeypatch):
+    stt_path = Path("forced_confirm_stt.srt")
+    ref_path = Path("forced_confirm_ref.srt")
+    out_path = Path("forced_confirm_report.json")
+
+    try:
+        stt_path.write_text(
+            """1
+00:00:10,000 --> 00:00:11,000
+Different distant line.
+""",
+            encoding="utf-8",
+        )
+        ref_path.write_text(
+            """1
+00:00:01,000 --> 00:00:02,000
+Important missing line.
+""",
+            encoding="utf-8",
+        )
+
+        class FakeLLMClient:
+            async def is_available(self):
+                return True
+
+            async def verify(self, candidate, prev_segment=None, next_segment=None):
+                assert candidate.is_forced_like
+                return LLMVerdict(
+                    severity=Severity.MED,
+                    category=Category.FORCED_MISMATCH,
+                    short_reason="Reference line is missing",
+                    evidence="B has no matching A",
+                    confidence=0.9,
+                )
+
+        monkeypatch.setattr(comparison, "create_llm_client", lambda **kwargs: FakeLLMClient())
+
+        config = Config(
+            stt_file=str(stt_path),
+            ref_file=str(ref_path),
+            out_file=str(out_path),
+            llm_mode=LLMMode.API,
+            no_html=True,
+        )
+
+        exit_code = asyncio.run(run_comparison(config))
+
+        assert exit_code == 0
+        report = load_report_json(out_path)
+        assert len(report.issues) == 1
+        assert report.issues[0].category == Category.FORCED_MISMATCH
+    finally:
+        for path in (stt_path, ref_path, out_path):
             if path.exists():
                 path.unlink()

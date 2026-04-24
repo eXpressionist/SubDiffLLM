@@ -192,6 +192,24 @@ class TestAnalyzeLongSegments:
         assert len(result) == 1
         assert result[0].segment_index == 1
 
+    def test_overlong_whisper_segment_still_reported_with_split_suggestions(self):
+        stt_segments = [
+            make_segment(0, 0, 20000, "РћС‡РµРЅСЊ РґР»РёРЅРЅС‹Р№ СЃРµРіРјРµРЅС‚ Whisper"),
+        ]
+        ref_segments = [
+            make_segment(0, 0, 5000, "Р§Р°СЃС‚СЊ 1"),
+            make_segment(1, 5000, 10000, "Р§Р°СЃС‚СЊ 2"),
+            make_segment(2, 10000, 15000, "Р§Р°СЃС‚СЊ 3"),
+            make_segment(3, 15000, 20000, "Р§Р°СЃС‚СЊ 4"),
+        ]
+
+        result = analyze_long_segments(stt_segments, ref_segments, max_duration_ms=6000)
+
+        assert len(result) == 1
+        assert result[0].segment.duration_ms == 20000
+        assert len(result[0].ref_segments) == 4
+        assert len(result[0].split_suggestions) >= 3
+
 
 class TestFindNaturalSplitPoints:
     """Тесты для find_natural_split_points."""

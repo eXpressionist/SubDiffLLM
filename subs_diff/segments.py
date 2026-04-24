@@ -139,7 +139,7 @@ def propose_split_points(
             )
         )
 
-    return suggestions
+    return sorted(suggestions, key=lambda item: (-item.confidence, item.split_time_ms))
 
 
 def analyze_long_segments(

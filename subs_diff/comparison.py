@@ -160,6 +160,25 @@ def _should_keep_issue_in_ref_only_mode(
     return llm_verdict.category in {Category.MISSING_CONTENT, Category.FORCED_MISMATCH}
 
 
+def _should_keep_forced_like_issue(
+    candidate: Candidate,
+    llm_verdict: LLMVerdict | None,
+    llm_available: bool,
+    llm_mode: LLMMode,
+) -> bool:
+    """Keep forced-like issues directly only when LLM cannot confirm them."""
+    if not candidate.is_forced_like:
+        return llm_verdict is not None
+
+    if not llm_available or llm_mode == LLMMode.OFF:
+        return True
+
+    if llm_verdict is None:
+        return False
+
+    return llm_verdict.category in {Category.MISSING_CONTENT, Category.FORCED_MISMATCH}
+
+
 def _create_long_segment_issue(
     long_info: LongSegmentInfo,
     issue_id: str,
@@ -244,8 +263,15 @@ def _candidate_context(
     llm_context_size: int,
 ) -> tuple[MergedSegment | None, MergedSegment | None]:
     """Return previous and next A-side context segments for a candidate."""
-    if llm_context_size <= 0 or not candidate.a_segment.indices:
+    if llm_context_size <= 0:
         return None, None
+
+    if not candidate.a_segment.indices:
+        prev_candidates = [seg for seg in segments_a if seg.end_ms <= candidate.b_segment.start_ms]
+        next_candidates = [seg for seg in segments_a if seg.start_ms >= candidate.b_segment.end_ms]
+        prev_segment = merge_segments([prev_candidates[-1]]) if prev_candidates else None
+        next_segment = merge_segments([next_candidates[0]]) if next_candidates else None
+        return prev_segment, next_segment
 
     idx = candidate.a_segment.indices[0]
     prev_segment = merge_segments([segments_a[idx - 1]]) if idx > 0 else None
@@ -414,7 +440,12 @@ async def run_comparison(config: Config) -> int:
                 [
                     create_issue_from_candidate(all_candidates[j], f"ISS-{j + 1:03d}", verdict)
                     for j, verdict in enumerate(all_verdicts[:batch_end])
-                    if verdict or all_candidates[j].is_forced_like
+                    if _should_keep_forced_like_issue(
+                        all_candidates[j],
+                        verdict,
+                        llm_available,
+                        config.llm_mode,
+                    )
                 ],
                 Path(config.out_file),
                 batch_end,
@@ -423,7 +454,15 @@ async def run_comparison(config: Config) -> int:
 
         for idx, (verdict, candidate) in enumerate(zip(all_verdicts, all_candidates, strict=False)):
             if candidate.is_forced_like:
-                issues.append(create_issue_from_candidate(candidate, f"ISS-{idx + 1:03d}", None))
+                if _should_keep_forced_like_issue(
+                    candidate,
+                    verdict,
+                    llm_available,
+                    config.llm_mode,
+                ):
+                    issues.append(
+                        create_issue_from_candidate(candidate, f"ISS-{idx + 1:03d}", verdict)
+                    )
             elif verdict and not _should_skip_trivial_missing_content(candidate, verdict):
                 issues.append(create_issue_from_candidate(candidate, f"ISS-{idx + 1:03d}", verdict))
 
@@ -490,11 +529,6 @@ async def run_comparison(config: Config) -> int:
         for idx, candidate in enumerate(all_candidates[resume_from:], start=resume_from):
             issue_id = f"ISS-{idx + 1:03d}"
 
-            if candidate.is_forced_like:
-                issues.append(create_issue_from_candidate(candidate, issue_id, llm_verdict=None))
-                pbar.update(1)
-                continue
-
             prev_segment, next_segment = _candidate_context(candidate, segments_a, llm_context_size)
 
             llm_verdict = None
@@ -527,7 +561,15 @@ async def run_comparison(config: Config) -> int:
             ):
                 llm_verdict = None
 
-            if llm_verdict:
+            if candidate.is_forced_like:
+                if _should_keep_forced_like_issue(
+                    candidate,
+                    llm_verdict,
+                    llm_available,
+                    config.llm_mode,
+                ):
+                    issues.append(create_issue_from_candidate(candidate, issue_id, llm_verdict))
+            elif llm_verdict:
                 issues.append(create_issue_from_candidate(candidate, issue_id, llm_verdict))
 
             _interrupt_state["issues"] = issues

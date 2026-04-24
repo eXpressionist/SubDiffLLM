@@ -16,6 +16,72 @@ class AlignmentResult:
     unmatched_b: list[MergedSegment]  # сегменты B без пары (возможные forced)
 
 
+def _token_coverage(a_tokens: list[str], b_tokens: list[str]) -> float:
+    """Return how much of B is covered by A, ignoring case."""
+    b_set = {token.lower() for token in b_tokens}
+    if not b_set:
+        return 1.0
+    a_set = {token.lower() for token in a_tokens}
+    return len(a_set & b_set) / len(b_set)
+
+
+def _timing_overlap(a: MergedSegment, b: MergedSegment) -> tuple[int, float]:
+    overlap_start = max(a.start_ms, b.start_ms)
+    overlap_end = min(a.end_ms, b.end_ms)
+    overlap_ms = max(0, overlap_end - overlap_start)
+    union_ms = max(a.end_ms, b.end_ms) - min(a.start_ms, b.start_ms)
+    timing_iou = (overlap_ms / union_ms) if union_ms > 0 else 0.0
+    return overlap_ms, timing_iou
+
+
+def _scored_similarity(
+    merged_a: MergedSegment,
+    merged_b: MergedSegment,
+    metrics: SimilarityMetrics,
+) -> float:
+    coverage = _token_coverage(merged_a.tokens, merged_b.tokens)
+    _, timing_iou = _timing_overlap(merged_a, merged_b)
+    return metrics.overall_similarity * (0.55 + 0.25 * timing_iou + 0.20 * coverage)
+
+
+def _find_temporal_rescue_match(
+    segments_a: list[Segment],
+    merged_b: MergedSegment,
+    time_tol_ms: int,
+    max_merge: int,
+) -> tuple[MergedSegment, SimilarityMetrics] | None:
+    """Find a nearby A-side merge that likely covers an unmatched B segment."""
+    best_match = None
+    best_score = -1.0
+    max_gap_ms = int(time_tol_ms * 1.5)
+
+    for start_idx in range(len(segments_a)):
+        for merge_count in range(1, min(max_merge, len(segments_a) - start_idx) + 1):
+            merged_a = merge_segments(segments_a[start_idx : start_idx + merge_count])
+            overlap_ms, timing_iou = _timing_overlap(merged_a, merged_b)
+
+            if overlap_ms == 0:
+                gap_ms = max(
+                    merged_b.start_ms - merged_a.end_ms,
+                    merged_a.start_ms - merged_b.end_ms,
+                )
+                if gap_ms > max_gap_ms:
+                    continue
+
+            metrics = compute_similarity(merged_a, merged_b)
+            coverage = _token_coverage(merged_a.tokens, merged_b.tokens)
+            score = metrics.overall_similarity * (0.45 + 0.25 * timing_iou + 0.30 * coverage)
+
+            if coverage < 0.65 and metrics.overall_similarity < 0.72:
+                continue
+
+            if score > best_score:
+                best_score = score
+                best_match = (merged_a, metrics)
+
+    return best_match
+
+
 def find_time_window(
     segments: list[Segment],
     start_ms: int,
@@ -172,9 +238,7 @@ def align_segments(
                     if start_diff > max_allowed_diff or end_diff > max_allowed_diff:
                         continue
 
-                    overlap_start = max(merged_a.start_ms, merged_b.start_ms)
-                    overlap_end = min(merged_a.end_ms, merged_b.end_ms)
-                    overlap_ms = max(0, overlap_end - overlap_start)
+                    overlap_ms, _ = _timing_overlap(merged_a, merged_b)
 
                     # Если нет пересечения и зазор большой, считаем пару некорректной.
                     if overlap_ms == 0:
@@ -186,11 +250,7 @@ def align_segments(
                             continue
 
                     metrics = compute_similarity(merged_a, merged_b)
-                    union_ms = max(merged_a.end_ms, merged_b.end_ms) - min(
-                        merged_a.start_ms, merged_b.start_ms
-                    )
-                    timing_iou = (overlap_ms / union_ms) if union_ms > 0 else 0.0
-                    scored_similarity = metrics.overall_similarity * (0.7 + 0.3 * timing_iou)
+                    scored_similarity = _scored_similarity(merged_a, merged_b, metrics)
 
                     if scored_similarity > best_score:
                         best_score = scored_similarity
@@ -199,7 +259,12 @@ def align_segments(
         if best_match:
             merged_a, merged_b, metrics = best_match
             aligned_pairs.append((merged_a, merged_b))
-            if is_candidate(
+            coverage = _token_coverage(merged_a.tokens, merged_b.tokens)
+            _, timing_iou = _timing_overlap(merged_a, merged_b)
+            needs_llm_for_temporal_rescue = (
+                len(merged_a.indices) > 1 and coverage >= 0.8 and timing_iou < 0.4
+            )
+            if needs_llm_for_temporal_rescue or is_candidate(
                 metrics,
                 min_score=min_score,
                 a_tokens=merged_a.tokens,
@@ -280,6 +345,24 @@ def align_segments(
                         is_forced_like=False,
                     )
                 )
+            continue
+
+        rescue_match = _find_temporal_rescue_match(
+            segments_a,
+            merged_b,
+            time_tol_ms,
+            max_merge,
+        )
+        if rescue_match is not None:
+            merged_a, metrics = rescue_match
+            candidates.append(
+                Candidate(
+                    a_segment=merged_a,
+                    b_segment=merged_b,
+                    metrics=metrics,
+                    is_forced_like=False,
+                )
+            )
             continue
 
         candidates.append(
